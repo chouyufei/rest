@@ -85,7 +85,7 @@ class SymbolStream:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                log.warning("WS %s reconnect: %s", self.state.key, exc)
+                log.warning("WS %s reconnect: %r", self.state.key, exc)
                 await asyncio.sleep(2.0)
 
     def _on_trade(self, payload: dict) -> None:
