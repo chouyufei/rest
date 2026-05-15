@@ -1,0 +1,143 @@
+:root {
+  color-scheme: dark;
+  --bg: #0c0f14;
+  --bg2: #141921;
+  --fg: #d8e0ea;
+  --fg-dim: #7a8696;
+  --buy: #1fbf75;
+  --sell: #ef4444;
+  --grid: #1e2530;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.app {
+  display: grid;
+  grid-template-rows: 44px 1fr;
+  height: 100%;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--grid);
+  background: var(--bg2);
+}
+
+.toolbar h1 {
+  font-size: 14px;
+  margin: 0;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.toolbar select, .toolbar button {
+  background: #1c232e;
+  border: 1px solid var(--grid);
+  color: var(--fg);
+  padding: 4px 8px;
+  border-radius: 4px;
+  font: inherit;
+}
+
+.toolbar .status { margin-left: auto; color: var(--fg-dim); }
+
+.grid {
+  display: grid;
+  grid-template-columns: 1.5fr 1.1fr 280px;
+  grid-template-rows: 1fr 1fr;
+  grid-template-areas:
+    "heatmap cvd  tape"
+    "heatmap foot tape";
+  gap: 1px;
+  background: var(--grid);
+  min-height: 0;
+}
+
+.panel {
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+.panel-head {
+  padding: 6px 10px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  color: var(--fg-dim);
+  border-bottom: 1px solid var(--grid);
+  background: var(--bg2);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.panel-body {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  position: relative;
+}
+
+.tape {
+  overflow-y: auto;
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+}
+
+.tape table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.tape td {
+  padding: 2px 8px;
+}
+
+.tape tr.buy td.price { color: var(--buy); }
+.tape tr.sell td.price { color: var(--sell); }
+.tape td.qty { text-align: right; color: var(--fg); }
+.tape td.ts { color: var(--fg-dim); text-align: right; }
+
+.footprint {
+  overflow: auto;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+
+.footprint table { border-collapse: collapse; }
+.footprint th, .footprint td {
+  border: 1px solid var(--grid);
+  padding: 2px 6px;
+  text-align: right;
+  white-space: nowrap;
+}
+.footprint th {
+  background: var(--bg2);
+  color: var(--fg-dim);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.footprint td.price {
+  background: var(--bg2);
+  color: var(--fg);
+  position: sticky;
+  left: 0;
+  text-align: right;
+}
+
+canvas { display: block; }
