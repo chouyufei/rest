@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Optional
 
 import orjson
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
@@ -91,8 +92,8 @@ async def klines_binance(market: str, symbol: str,
 @app.get("/api/klines/local/{market}/{symbol}")
 async def klines_local(market: str, symbol: str,
                         interval: str = Query("1m"),
-                        ts_from: int | None = Query(None),
-                        ts_to: int | None = Query(None),
+                        ts_from: Optional[int] = Query(None),
+                        ts_to: Optional[int] = Query(None),
                         limit: int = Query(1500)) -> dict:
     try:
         data = klines_mod.aggregate_local(market, symbol.upper(), interval, ts_from, ts_to, limit)
