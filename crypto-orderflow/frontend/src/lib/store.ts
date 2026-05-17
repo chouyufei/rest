@@ -79,6 +79,8 @@ export function useStore() {
       if (stop) return;
       const proto = location.protocol === "https:" ? "wss" : "ws";
       ws = new WebSocket(`${proto}://${location.host}/ws`);
+      ws.binaryType = "arraybuffer";
+      const decoder = new TextDecoder();
       ws.onopen = () => setStore((p) => ({ ...p, connected: true }));
       ws.onclose = () => {
         setStore((p) => ({ ...p, connected: false }));
@@ -86,9 +88,12 @@ export function useStore() {
       };
       ws.onmessage = (ev) => {
         try {
-          schedule(JSON.parse(ev.data));
-        } catch {
-          /* ignore */
+          const text = typeof ev.data === "string"
+            ? ev.data
+            : decoder.decode(ev.data as ArrayBuffer);
+          schedule(JSON.parse(text));
+        } catch (err) {
+          console.warn("ws parse failed", err);
         }
       };
     }
