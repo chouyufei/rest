@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { DepthFrame, FootprintBin, SymbolSnapshot, Trade, WsMsg } from "./types";
+import type { DepthFrame, FootprintBin, ReplayParams, SymbolSnapshot, Trade, WsMsg } from "./types";
 
 const TAPE_MAX = 500;
 const HEATMAP_MAX = 600;
@@ -7,9 +7,13 @@ const CVD_MAX = 3600;
 const FOOTPRINT_MAX_BINS = 30;
 const FOOTPRINT_BIN_SEC = 60;
 
+export type Mode = { kind: "live" } | { kind: "replay"; params: ReplayParams };
+
 export interface Store {
   symbols: Record<string, SymbolSnapshot>;
   connected: boolean;
+  mode: Mode;
+  replayDone: boolean;
 }
 
 function pushCvd(s: SymbolSnapshot, t: Trade): [number, number, number][] {
@@ -28,6 +32,7 @@ function pushCvd(s: SymbolSnapshot, t: Trade): [number, number, number][] {
 }
 
 function bucketPrice(price: number, tick: number): number {
+  if (!tick) return price;
   return Math.round(Math.round(price / tick) * tick * 1e8) / 1e8;
 }
 
@@ -57,16 +62,29 @@ function pushFootprint(s: SymbolSnapshot, t: Trade): FootprintBin[] {
   return bins;
 }
 
+function wsUrl(mode: Mode): string {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  if (mode.kind === "live") return `${proto}://${location.host}/ws`;
+  const { market, symbol, tsFrom, tsTo, speed } = mode.params;
+  const qs = new URLSearchParams({
+    market, symbol, ts_from: String(tsFrom), ts_to: String(tsTo), speed: String(speed),
+  });
+  return `${proto}://${location.host}/ws/replay?${qs}`;
+}
+
 export function useStore() {
-  const [store, setStore] = useState<Store>({ symbols: {}, connected: false });
-  const ref = useRef(store);
-  ref.current = store;
+  const [store, setStore] = useState<Store>({
+    symbols: {}, connected: false, mode: { kind: "live" }, replayDone: false,
+  });
+  const modeRef = useRef(store.mode);
+  modeRef.current = store.mode;
 
   useEffect(() => {
     let ws: WebSocket | null = null;
     let stop = false;
     let pending: WsMsg[] = [];
     let frame: number | null = null;
+    const decoder = new TextDecoder();
 
     function flush() {
       frame = null;
@@ -74,32 +92,37 @@ export function useStore() {
       const batch = pending;
       pending = [];
       setStore((prev) => {
-        const next: Record<string, SymbolSnapshot> = { ...prev.symbols };
+        let symbols = prev.symbols;
+        let replayDone = prev.replayDone;
         for (const m of batch) {
-          if (m.type === "init") {
-            return { symbols: m.data, connected: true };
+          if (m.type === "replay_done") {
+            replayDone = true;
+            continue;
           }
-          const s = next[m.key];
+          if (m.type === "init") {
+            symbols = m.data;
+            continue;
+          }
+          const s = symbols[m.key];
           if (!s) continue;
+          let next = symbols === prev.symbols ? { ...symbols } : symbols;
+          symbols = next;
           if (m.type === "trade") {
             const t = m.data;
             const tape = [t, ...s.tape].slice(0, TAPE_MAX);
             const cvd = pushCvd(s, t);
             const footprint = pushFootprint(s, t);
-            next[m.key] = { ...s, tape, cvd, footprint, last_price: t.price };
+            symbols[m.key] = { ...s, tape, cvd, footprint, last_price: t.price };
           } else if (m.type === "depth") {
-            const f: DepthFrame = m.data;
+            const f = m.data;
             const heatmap = [...s.heatmap, f].slice(-HEATMAP_MAX);
-            next[m.key] = {
-              ...s,
-              bids: f.bids,
-              asks: f.asks,
-              heatmap,
+            symbols[m.key] = {
+              ...s, bids: f.bids, asks: f.asks, heatmap,
               obi: f.obi ?? s.obi,
             };
           }
         }
-        return { symbols: next, connected: prev.connected };
+        return { ...prev, symbols, replayDone };
       });
     }
 
@@ -110,14 +133,12 @@ export function useStore() {
 
     function connect() {
       if (stop) return;
-      const proto = location.protocol === "https:" ? "wss" : "ws";
-      ws = new WebSocket(`${proto}://${location.host}/ws`);
+      ws = new WebSocket(wsUrl(modeRef.current));
       ws.binaryType = "arraybuffer";
-      const decoder = new TextDecoder();
-      ws.onopen = () => setStore((p) => ({ ...p, connected: true }));
+      ws.onopen = () => setStore((p) => ({ ...p, connected: true, replayDone: false }));
       ws.onclose = () => {
         setStore((p) => ({ ...p, connected: false }));
-        if (!stop) setTimeout(connect, 1500);
+        if (!stop && modeRef.current.kind === "live") setTimeout(connect, 1500);
       };
       ws.onmessage = (ev) => {
         try {
@@ -130,13 +151,18 @@ export function useStore() {
         }
       };
     }
+
     connect();
     return () => {
       stop = true;
       if (frame != null) cancelAnimationFrame(frame);
       ws?.close();
     };
-  }, []);
+  }, [store.mode]);
 
-  return store;
+  function setMode(mode: Mode) {
+    setStore((p) => ({ ...p, mode, symbols: {}, replayDone: false }));
+  }
+
+  return { ...store, setMode };
 }

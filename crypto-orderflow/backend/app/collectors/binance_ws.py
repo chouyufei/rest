@@ -19,6 +19,8 @@ from ..config import (
     SymbolSpec,
 )
 from ..state import SymbolState, hub
+from ..storage import StorageHub
+from ..storage.writer import storage
 
 log = logging.getLogger(__name__)
 
@@ -91,7 +93,7 @@ class SymbolStream:
     def _on_trade(self, payload: dict) -> None:
         ts, price, qty, maker = _trade_fields(payload, self.state.spec.market)
         item = self.state.on_trade(ts, price, qty, maker)
-        # fire-and-forget broadcast
+        storage.on_trade(self.state.spec.market, self.state.spec.symbol, ts, price, qty, maker)
         asyncio.create_task(
             hub.broadcast({
                 "type": "trade",
@@ -101,6 +103,8 @@ class SymbolStream:
         )
 
     async def _on_depth(self, payload: dict) -> None:
+        # 持久化原始 diff 总是发生（即使本地簿还在 bootstrap），方便后续完整重建
+        storage.on_diff(self.state.spec.market, self.state.spec.symbol, payload)
         if not self.state.book.ready:
             self.buffer.append(payload)
             return
@@ -193,6 +197,10 @@ async def _depth_sampler(streams: list[SymbolStream]) -> None:
             sample = s.state.sample_depth(ts)
             if sample is None:
                 continue
+            storage.on_snapshot(
+                s.state.spec.market, s.state.spec.symbol,
+                ts, sample["bids"], sample["asks"], sample["obi"],
+            )
             await hub.broadcast({
                 "type": "depth",
                 "key": s.state.key,

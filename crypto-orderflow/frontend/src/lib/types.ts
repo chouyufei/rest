@@ -41,4 +41,19 @@ export interface SymbolSnapshot {
 export type WsMsg =
   | { type: "init"; data: Record<string, SymbolSnapshot> }
   | { type: "trade"; key: string; data: Trade }
-  | { type: "depth"; key: string; data: DepthFrame };
+  | { type: "depth"; key: string; data: DepthFrame }
+  | { type: "replay_done" };
+
+export interface ReplayParams {
+  market: "spot" | "futures";
+  symbol: string;
+  tsFrom: number;
+  tsTo: number;
+  speed: number;
+}
+
+export interface HistoryRange {
+  market: string;
+  symbol: string;
+  dates: { trades: string[]; snapshots: string[]; diffs: string[] };
+}
