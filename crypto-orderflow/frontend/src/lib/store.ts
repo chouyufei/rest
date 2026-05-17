@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import type { DepthFrame, SymbolSnapshot, Trade, WsMsg } from "./types";
+import type { DepthFrame, FootprintBin, SymbolSnapshot, Trade, WsMsg } from "./types";
 
 const TAPE_MAX = 500;
 const HEATMAP_MAX = 600;
 const CVD_MAX = 3600;
+const FOOTPRINT_MAX_BINS = 30;
+const FOOTPRINT_BIN_SEC = 60;
 
 export interface Store {
   symbols: Record<string, SymbolSnapshot>;
@@ -23,6 +25,36 @@ function pushCvd(s: SymbolSnapshot, t: Trade): [number, number, number][] {
     if (cvd.length > CVD_MAX) cvd.splice(0, cvd.length - CVD_MAX);
   }
   return cvd;
+}
+
+function bucketPrice(price: number, tick: number): number {
+  return Math.round(Math.round(price / tick) * tick * 1e8) / 1e8;
+}
+
+function pushFootprint(s: SymbolSnapshot, t: Trade): FootprintBin[] {
+  const sec = Math.floor(t.ts / 1000);
+  const binTs = sec - (sec % FOOTPRINT_BIN_SEC);
+  const price = bucketPrice(t.price, s.tick_size);
+  const bins = s.footprint.slice();
+  let last = bins[bins.length - 1];
+  if (!last || last.ts !== binTs) {
+    last = { ts: binTs, buy: 0, sell: 0, delta: 0, cells: [] };
+    bins.push(last);
+    if (bins.length > FOOTPRINT_MAX_BINS) bins.shift();
+  } else {
+    last = { ...last, cells: last.cells.slice() };
+    bins[bins.length - 1] = last;
+  }
+  const idx = last.cells.findIndex((c) => c.price === price);
+  const cell = idx >= 0 ? { ...last.cells[idx] } : { price, buy: 0, sell: 0 };
+  if (t.side === "buy") cell.buy += t.qty;
+  else cell.sell += t.qty;
+  if (idx >= 0) last.cells[idx] = cell;
+  else last.cells.push(cell);
+  if (t.side === "buy") last.buy += t.qty;
+  else last.sell += t.qty;
+  last.delta = last.buy - last.sell;
+  return bins;
 }
 
 export function useStore() {
@@ -53,7 +85,8 @@ export function useStore() {
             const t = m.data;
             const tape = [t, ...s.tape].slice(0, TAPE_MAX);
             const cvd = pushCvd(s, t);
-            next[m.key] = { ...s, tape, cvd, last_price: t.price };
+            const footprint = pushFootprint(s, t);
+            next[m.key] = { ...s, tape, cvd, footprint, last_price: t.price };
           } else if (m.type === "depth") {
             const f: DepthFrame = m.data;
             const heatmap = [...s.heatmap, f].slice(-HEATMAP_MAX);

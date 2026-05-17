@@ -55,6 +55,8 @@ class SymbolState:
         }
 
     def snapshot_full(self) -> dict[str, Any]:
+        # 详细数据 (tape/footprint/heatmap/cvd) 通过 /api/snapshot/{market}/{symbol}
+        # 单独查询，避免初始 WS 帧过大被代理截断。
         bids, asks = self.book.top_n(VISIBLE_DEPTH_LEVELS) if self.book.ready else ([], [])
         return {
             "symbol": self.spec.symbol,
@@ -65,10 +67,10 @@ class SymbolState:
             "obi": self.obi,
             "bids": bids,
             "asks": asks,
-            "tape": list(self.tape),
-            "cvd": self.cvd.snapshot(),
-            "footprint": self.footprint.snapshot(),
-            "heatmap": self.heatmap.snapshot(),
+            "tape": [],
+            "cvd": [],
+            "footprint": [],
+            "heatmap": [],
         }
 
 
