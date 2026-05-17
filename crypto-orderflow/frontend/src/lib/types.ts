@@ -23,6 +23,24 @@ export interface FootprintBin {
   cells: FootprintCell[];
 }
 
+export interface SignalEvent {
+  kind: "absorption" | "iceberg";
+  ts: number;
+  price: number;
+  qty: number;
+  side: "bid" | "ask";
+  note?: string;
+}
+
+export interface FundingInfo {
+  symbol: string;
+  mark_price: number;
+  index_price: number;
+  funding_rate: number;
+  next_funding_time: number;
+  ts: number;
+}
+
 export interface SymbolSnapshot {
   symbol: string;
   market: "spot" | "futures";
@@ -36,12 +54,16 @@ export interface SymbolSnapshot {
   cvd: [number, number, number][];
   footprint: FootprintBin[];
   heatmap: DepthFrame[];
+  signals: SignalEvent[];
+  funding?: FundingInfo | null;
 }
 
 export type WsMsg =
   | { type: "init"; data: Record<string, SymbolSnapshot> }
   | { type: "trade"; key: string; data: Trade }
   | { type: "depth"; key: string; data: DepthFrame }
+  | { type: "signal"; key: string; data: SignalEvent }
+  | { type: "funding"; key: string; data: FundingInfo }
   | { type: "replay_done" };
 
 export interface ReplayParams {

@@ -120,6 +120,11 @@ export function useStore() {
               ...s, bids: f.bids, asks: f.asks, heatmap,
               obi: f.obi ?? s.obi,
             };
+          } else if (m.type === "signal") {
+            const signals = [...s.signals, m.data].slice(-200);
+            symbols[m.key] = { ...s, signals };
+          } else if (m.type === "funding") {
+            symbols[m.key] = { ...s, funding: m.data };
           }
         }
         return { ...prev, symbols, replayDone };

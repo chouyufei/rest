@@ -8,7 +8,8 @@ from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnec
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import ORJSONResponse
 
-from ..collectors import run_all
+from ..analytics import klines as klines_mod
+from ..collectors import run_all, run_funding_loop
 from ..config import SYMBOLS
 from ..state import hub
 from ..storage import HistoryReader, Replayer
@@ -25,21 +26,24 @@ app.add_middleware(
 )
 
 _collector_task: asyncio.Task | None = None
+_funding_task: asyncio.Task | None = None
 _reader = HistoryReader()
 
 
 @app.on_event("startup")
 async def _startup() -> None:
-    global _collector_task
+    global _collector_task, _funding_task
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     await storage.start()
     _collector_task = asyncio.create_task(run_all(SYMBOLS))
+    _funding_task = asyncio.create_task(run_funding_loop(SYMBOLS))
 
 
 @app.on_event("shutdown")
 async def _shutdown() -> None:
-    if _collector_task is not None:
-        _collector_task.cancel()
+    for t in (_collector_task, _funding_task):
+        if t is not None:
+            t.cancel()
     await storage.stop()
 
 
@@ -59,6 +63,42 @@ async def get_snapshot(market: str, symbol: str) -> dict:
     if s is None:
         raise HTTPException(404, "unknown symbol")
     return s.snapshot_full()
+
+
+# ---- klines ------------------------------------------------------------
+
+@app.get("/api/klines/intervals")
+async def kline_intervals() -> dict:
+    return {"intervals": klines_mod.supported_intervals()}
+
+
+@app.get("/api/klines/binance/{market}/{symbol}")
+async def klines_binance(market: str, symbol: str,
+                          interval: str = Query("1m"),
+                          limit: int = Query(500)) -> dict:
+    if market not in ("spot", "futures"):
+        raise HTTPException(400, "market must be spot|futures")
+    try:
+        data = await klines_mod.fetch_binance_klines(market, symbol.upper(), interval, limit)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        log.warning("binance klines fail: %r", exc)
+        raise HTTPException(502, "upstream error")
+    return {"market": market, "symbol": symbol.upper(), "interval": interval, "klines": data}
+
+
+@app.get("/api/klines/local/{market}/{symbol}")
+async def klines_local(market: str, symbol: str,
+                        interval: str = Query("1m"),
+                        ts_from: int | None = Query(None),
+                        ts_to: int | None = Query(None),
+                        limit: int = Query(1500)) -> dict:
+    try:
+        data = klines_mod.aggregate_local(market, symbol.upper(), interval, ts_from, ts_to, limit)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"market": market, "symbol": symbol.upper(), "interval": interval, "klines": data}
 
 
 # ---- history -----------------------------------------------------------

@@ -3,9 +3,18 @@ import type { SymbolSnapshot } from "../lib/types";
 
 interface Props { snap: SymbolSnapshot; }
 
+const STACK_RATIO = 3;       // 同一价位多空成交比例
+const STACK_MIN_RUN = 3;     // 连续 N 档以上视为 stacked imbalance
+
 function fmtTs(s: number): string {
   const d = new Date(s * 1000);
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+function cellImbalance(buy: number, sell: number): "buy" | "sell" | null {
+  if (buy >= 1 && sell > 0 && buy / sell >= STACK_RATIO) return "buy";
+  if (sell >= 1 && buy > 0 && sell / buy >= STACK_RATIO) return "sell";
+  return null;
 }
 
 export default function FootprintView({ snap }: Props) {
@@ -20,11 +29,32 @@ export default function FootprintView({ snap }: Props) {
     return Array.from(set).sort((a, b) => b - a);
   }, [bins]);
 
-  // index bins for quick lookup
+  // index bins for quick lookup; also compute stacked-imbalance highlight
   const indexed = useMemo(() => bins.map((b) => {
     const map = new Map<number, [number, number]>();
     for (const c of b.cells) map.set(c.price, [c.buy, c.sell]);
-    return { ts: b.ts, map, delta: b.delta, buy: b.buy, sell: b.sell };
+    // walk price ladder descending for this bin to find stacked runs
+    const stacked = new Set<number>();  // prices participating in a stacked imbalance run
+    const sorted = b.cells.map((c) => c.price).sort((x, y) => y - x);
+    let runSide: "buy" | "sell" | null = null;
+    let run: number[] = [];
+    const flush = () => {
+      if (run.length >= STACK_MIN_RUN) for (const p of run) stacked.add(p);
+      run = [];
+    };
+    for (const p of sorted) {
+      const c = map.get(p)!;
+      const side = cellImbalance(c[0], c[1]);
+      if (side && side === runSide) {
+        run.push(p);
+      } else {
+        flush();
+        runSide = side;
+        run = side ? [p] : [];
+      }
+    }
+    flush();
+    return { ts: b.ts, map, delta: b.delta, buy: b.buy, sell: b.sell, stacked };
   }), [bins]);
 
   // auto-scroll to right edge whenever new bin appears
@@ -80,12 +110,20 @@ export default function FootprintView({ snap }: Props) {
                 const sell = cell?.[1] ?? 0;
                 const ab = Math.min(0.9, Math.log1p(buy) / Math.log1p(maxCell));
                 const as = Math.min(0.9, Math.log1p(sell) / Math.log1p(maxCell));
+                const stacked = b.stacked.has(p);
+                const ring = stacked ? "2px solid #f59e0b" : undefined;
                 return (
                   <Fragment key={b.ts}>
-                    <td style={{ background: `rgba(239,68,68,${as.toFixed(3)})`, color: sell ? "#fff" : "var(--fg-dim)" }}>
+                    <td style={{ background: `rgba(239,68,68,${as.toFixed(3)})`,
+                                 color: sell ? "#fff" : "var(--fg-dim)",
+                                 outline: ring ? `${ring}` : undefined,
+                                 outlineOffset: ring ? "-2px" : undefined }}>
                       {fmtVol(sell)}
                     </td>
-                    <td style={{ background: `rgba(31,191,117,${ab.toFixed(3)})`, color: buy ? "#fff" : "var(--fg-dim)" }}>
+                    <td style={{ background: `rgba(31,191,117,${ab.toFixed(3)})`,
+                                 color: buy ? "#fff" : "var(--fg-dim)",
+                                 outline: ring ? `${ring}` : undefined,
+                                 outlineOffset: ring ? "-2px" : undefined }}>
                       {fmtVol(buy)}
                     </td>
                   </Fragment>

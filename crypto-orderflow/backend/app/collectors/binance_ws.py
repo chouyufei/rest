@@ -92,7 +92,7 @@ class SymbolStream:
 
     def _on_trade(self, payload: dict) -> None:
         ts, price, qty, maker = _trade_fields(payload, self.state.spec.market)
-        item = self.state.on_trade(ts, price, qty, maker)
+        item, sigs = self.state.on_trade(ts, price, qty, maker)
         storage.on_trade(self.state.spec.market, self.state.spec.symbol, ts, price, qty, maker)
         asyncio.create_task(
             hub.broadcast({
@@ -101,6 +101,14 @@ class SymbolStream:
                 "data": item,
             })
         )
+        for sig in sigs:
+            asyncio.create_task(
+                hub.broadcast({
+                    "type": "signal",
+                    "key": self.state.key,
+                    "data": sig,
+                })
+            )
 
     async def _on_depth(self, payload: dict) -> None:
         # 持久化原始 diff 总是发生（即使本地簿还在 bootstrap），方便后续完整重建

@@ -4,7 +4,7 @@ import asyncio
 from collections import deque
 from typing import Any
 
-from .analytics import CvdSeries, DepthHeatmap, Footprint, order_book_imbalance
+from .analytics import CvdSeries, DepthHeatmap, Footprint, SignalDetector, order_book_imbalance
 from .config import (
     HEATMAP_RING_FRAMES,
     SYMBOLS,
@@ -26,9 +26,12 @@ class SymbolState:
         self.tape: deque[dict] = deque(maxlen=TRADE_TAPE_SIZE)
         self.obi: float = 0.0
         self.last_price: float | None = None
+        self.signals = SignalDetector()
+        self.recent_signals: deque[dict] = deque(maxlen=100)
+        self.funding: dict[str, Any] | None = None
         self.lock = asyncio.Lock()
 
-    def on_trade(self, ts_ms: int, price: float, qty: float, buyer_is_maker: bool) -> dict:
+    def on_trade(self, ts_ms: int, price: float, qty: float, buyer_is_maker: bool) -> tuple[dict, list[dict]]:
         self.last_price = price
         self.cvd.add_trade(ts_ms, price, qty, buyer_is_maker)
         self.footprint.add_trade(ts_ms, price, qty, buyer_is_maker)
@@ -39,7 +42,17 @@ class SymbolState:
             "side": "sell" if buyer_is_maker else "buy",
         }
         self.tape.append(item)
-        return item
+        # 用本地簿顶部 5 档作为 iceberg 阈值参考
+        top_avg = 0.0
+        if self.book.ready:
+            top = (list(self.book.bids.items())[:5] + list(self.book.asks.items())[:5])
+            qtys = [q for _, q in top]
+            if qtys:
+                top_avg = sum(qtys) / len(qtys)
+        sigs = self.signals.on_trade(ts_ms, price, qty, buyer_is_maker, top_avg)
+        for s in sigs:
+            self.recent_signals.append(s)
+        return item, sigs
 
     def sample_depth(self, ts_ms: int) -> dict | None:
         if not self.book.ready:
@@ -71,6 +84,8 @@ class SymbolState:
             "cvd": [],
             "footprint": [],
             "heatmap": [],
+            "signals": list(self.recent_signals),
+            "funding": self.funding,
         }
 
 

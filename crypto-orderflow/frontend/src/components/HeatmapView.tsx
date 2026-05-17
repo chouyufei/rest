@@ -91,6 +91,34 @@ export default function HeatmapView({ snap }: Props) {
       ctx.fill();
     }
 
+    // overlay absorption / iceberg signals
+    for (const s of snap.signals) {
+      if (s.ts < tStart) continue;
+      if (s.price < pxMin || s.price > pxMax) continue;
+      const x = w - ((nowTs - s.ts) / tapeWindow) * w;
+      const y = h - ((s.price - pxMin) / (pxMax - pxMin)) * h;
+      if (s.kind === "absorption") {
+        ctx.strokeStyle = "#f59e0b";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(x, y, 10, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = "#f59e0b";
+        ctx.font = "10px ui-monospace, monospace";
+        ctx.textAlign = "left";
+        ctx.fillText("A", x + 12, y + 3);
+      } else {
+        ctx.strokeStyle = "#22d3ee";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x - 8, y - 8, 16, 16);
+        ctx.fillStyle = "#22d3ee";
+        ctx.font = "10px ui-monospace, monospace";
+        ctx.textAlign = "left";
+        ctx.fillText("I", x + 12, y + 3);
+      }
+    }
+    ctx.lineWidth = 1;
+
     // mid line
     const midY = h - ((mid - pxMin) / (pxMax - pxMin)) * h;
     ctx.strokeStyle = "rgba(216,224,234,0.25)";
