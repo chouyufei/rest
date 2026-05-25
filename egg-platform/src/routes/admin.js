@@ -10,7 +10,7 @@ router.get('/stats', (req, res) => {
   const farmCount = db.prepare("SELECT COUNT(*) c FROM users WHERE role='farm'").get().c;
   const buyerCount = db.prepare("SELECT COUNT(*) c FROM users WHERE role='buyer'").get().c;
   const activeAuctions = db.prepare("SELECT COUNT(*) c FROM resources WHERE status='auctioning'").get().c;
-  const sold = db.prepare("SELECT COUNT(*) c, COALESCE(SUM(current_price * quantity),0) gmv FROM resources WHERE status='sold'").get();
+  const sold = db.prepare("SELECT COUNT(*) c, COALESCE(SUM(current_price),0) gmv FROM resources WHERE status='sold'").get();
   const failed = db.prepare("SELECT COUNT(*) c FROM resources WHERE status='failed'").get().c;
   const total = sold.c + failed;
   const successRate = total === 0 ? 0 : Math.round((sold.c / total) * 100);
