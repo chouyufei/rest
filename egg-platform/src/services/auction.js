@@ -14,7 +14,8 @@ function getResource(id) {
 function freezeBuyerDeposit(userId, resourceId) {
   const dep = db.prepare(`
     SELECT * FROM deposits
-    WHERE user_id = ? AND type = 'buyer_bid' AND status = 'available'
+    WHERE user_id = ? AND type IN ('buyer_bid','farm_quality') AND status = 'available'
+    ORDER BY type DESC
     LIMIT 1
   `).get(userId);
   if (dep) {
@@ -23,7 +24,7 @@ function freezeBuyerDeposit(userId, resourceId) {
   }
   const existingFrozen = db.prepare(`
     SELECT * FROM deposits
-    WHERE user_id = ? AND type = 'buyer_bid' AND status = 'frozen' AND frozen_for = ?
+    WHERE user_id = ? AND type IN ('buyer_bid','farm_quality') AND status = 'frozen' AND frozen_for = ?
   `).get(userId, resourceId);
   return existingFrozen;
 }
@@ -35,15 +36,19 @@ function placeBidTx(resourceId, bidderId, price, isAuto = 0, maxPrice = null) {
   if (resource.status !== 'auctioning') throw new Error('竞拍未进行中');
   if (now < resource.start_at) throw new Error('竞拍未开始');
   if (now > resource.end_at) throw new Error('竞拍已结束');
-  if (resource.farm_id === bidderId) throw new Error('养殖场不能参与自己的竞拍');
+  if (resource.farm_id === bidderId) throw new Error('不能参与自己发布的竞拍');
 
-  const requiredMin = (resource.current_bidder_id ? resource.current_price : resource.start_price - resource.min_increment) + resource.min_increment;
-  if (price < requiredMin) {
-    throw new Error(`出价需至少 ${requiredMin} 元`);
+  const isSupply = (resource.kind || 'supply') === 'supply';
+  if (isSupply) {
+    const requiredMin = (resource.current_bidder_id ? resource.current_price : resource.start_price - resource.min_increment) + resource.min_increment;
+    if (price < requiredMin) throw new Error(`出价需 ≥ ${requiredMin} 元`);
+  } else {
+    const requiredMax = (resource.current_bidder_id ? resource.current_price : resource.start_price + resource.min_increment) - resource.min_increment;
+    if (price > requiredMax) throw new Error(`报价需 ≤ ${requiredMax} 元`);
   }
 
   const dep = freezeBuyerDeposit(bidderId, resourceId);
-  if (!dep) throw new Error('请先缴纳 200 元竞拍保证金');
+  if (!dep) throw new Error(isSupply ? '请先缴纳 200 元竞拍保证金' : '请先缴纳保证金（养殖场 1000 / 采购商 200）');
 
   db.prepare(`
     INSERT INTO bids (resource_id, bidder_id, price, is_auto, max_price, created_at)
@@ -58,7 +63,7 @@ function placeBidTx(resourceId, bidderId, price, isAuto = 0, maxPrice = null) {
     newEndAt = resource.end_at + EXTENSION_MS;
     newExtendCount += 1;
     notify(resource.farm_id, 'auction_extended', '竞拍延时',
-      `资源「${resource.title}」因最后5分钟出价，延长5分钟（第${newExtendCount}次/共3次）`, resource.id);
+      `「${resource.title}」因最后5分钟出价，延长5分钟（第${newExtendCount}次/共3次）`, resource.id);
   }
 
   db.prepare(`
@@ -72,10 +77,10 @@ function placeBidTx(resourceId, bidderId, price, isAuto = 0, maxPrice = null) {
       UPDATE deposits SET status='available', frozen_for=NULL
       WHERE user_id = ? AND type='buyer_bid' AND status='frozen' AND frozen_for = ?
     `).run(prevBidder, resourceId);
-    notify(prevBidder, 'outbid', '被反超', `您在「${resource.title}」的出价已被超过`, resourceId);
+    notify(prevBidder, 'outbid', isSupply ? '被反超' : '被压价', `您在「${resource.title}」的${isSupply ? '出价' : '报价'}已被超过`, resourceId);
   }
 
-  notify(resource.farm_id, 'new_bid', '新出价', `「${resource.title}」收到 ${price} 元出价`, resourceId);
+  notify(resource.farm_id, 'new_bid', isSupply ? '新出价' : '新报价', `「${resource.title}」收到 ${price} 元${isSupply ? '出价' : '报价'}`, resourceId);
 
   triggerAutoBids(resourceId, bidderId);
 
@@ -85,6 +90,8 @@ function placeBidTx(resourceId, bidderId, price, isAuto = 0, maxPrice = null) {
 function triggerAutoBids(resourceId, latestBidderId) {
   const resource = getResource(resourceId);
   if (!resource || resource.status !== 'auctioning') return;
+
+  if ((resource.kind || 'supply') !== 'supply') return;
 
   const autoBids = db.prepare(`
     SELECT * FROM auto_bids
@@ -111,28 +118,32 @@ function closeAuction(resourceId) {
   const now = Date.now();
   if (now < r.end_at) return;
 
+  const isSupply = (r.kind || 'supply') === 'supply';
+
   if (r.current_bidder_id) {
     db.prepare(`UPDATE resources SET status='sold' WHERE id=?`).run(r.id);
-    const orderInfo = db.prepare(`
+    const farmId = isSupply ? r.farm_id : r.current_bidder_id;
+    const buyerId = isSupply ? r.current_bidder_id : r.farm_id;
+    db.prepare(`
       INSERT INTO orders (resource_id, farm_id, buyer_id, final_price, quantity, status, created_at)
       VALUES (?, ?, ?, ?, ?, 'pending_group', ?)
-    `).run(r.id, r.farm_id, r.current_bidder_id, r.current_price, r.quantity, now);
+    `).run(r.id, farmId, buyerId, r.current_price, r.quantity, now);
 
     notify(r.farm_id, 'auction_won', '竞拍成交',
-      `「${r.title}」以 ${r.current_price} 元成交，请在 IM 群中联系采购商`, r.id);
-    notify(r.current_bidder_id, 'auction_won', '竞拍成功',
-      `恭喜！您以 ${r.current_price} 元拍下「${r.title}」`, r.id);
+      `「${r.title}」以 ${r.current_price} 元成交，请在群中沟通发货${isSupply ? '' : '（您是采购方）'}` + ' [SMS: 已发送短信提醒]', r.id);
+    notify(r.current_bidder_id, 'auction_won', isSupply ? '竞拍成功' : '应标成功',
+      `恭喜！您以 ${r.current_price} 元${isSupply ? '拍下' : '中标'}「${r.title}」 [SMS: 已发送短信提醒]`, r.id);
 
     db.prepare(`
       UPDATE deposits SET status='available', frozen_for=NULL
-      WHERE type='buyer_bid' AND status='frozen' AND frozen_for=? AND user_id != ?
+      WHERE type IN ('buyer_bid','farm_quality') AND status='frozen' AND frozen_for=? AND user_id != ?
     `).run(r.id, r.current_bidder_id);
   } else {
     db.prepare(`UPDATE resources SET status='failed' WHERE id=?`).run(r.id);
-    notify(r.farm_id, 'auction_failed', '流拍', `「${r.title}」无人出价，已流拍`, r.id);
+    notify(r.farm_id, 'auction_failed', '流拍', `「${r.title}」无人${isSupply ? '出价' : '应标'}，已流拍`, r.id);
     db.prepare(`
       UPDATE deposits SET status='available', frozen_for=NULL
-      WHERE type='buyer_bid' AND status='frozen' AND frozen_for=?
+      WHERE type IN ('buyer_bid','farm_quality') AND status='frozen' AND frozen_for=?
     `).run(r.id);
   }
 }
@@ -161,8 +172,8 @@ function releaseDeposits(orderId) {
   if (!order) return;
   db.prepare(`
     UPDATE deposits SET status='available', frozen_for=NULL, released_at=?
-    WHERE type='buyer_bid' AND frozen_for=? AND user_id=?
-  `).run(Date.now(), order.resource_id, order.buyer_id);
+    WHERE type IN ('buyer_bid','farm_quality') AND frozen_for=?
+  `).run(Date.now(), order.resource_id);
 }
 
 module.exports = {

@@ -22,13 +22,16 @@ function enrich(r) {
 
 router.get('/', (req, res) => {
   sweep();
-  const { status, region, color, keyword, sort } = req.query;
+  const { status, region, province, color, keyword, sort, kind, breed } = req.query;
   let sql = 'SELECT * FROM resources WHERE 1=1';
   const params = [];
+  if (kind) { sql += ' AND kind = ?'; params.push(kind); }
   if (status) { sql += ' AND status = ?'; params.push(status); }
   else { sql += " AND status IN ('auctioning','sold','failed')"; }
   if (region) { sql += ' AND region LIKE ?'; params.push(`%${region}%`); }
+  if (province) { sql += ' AND province = ?'; params.push(province); }
   if (color) { sql += ' AND egg_color = ?'; params.push(color); }
+  if (breed) { sql += ' AND chicken_breed LIKE ?'; params.push(`%${breed}%`); }
   if (keyword) { sql += ' AND (title LIKE ? OR description LIKE ?)'; params.push(`%${keyword}%`, `%${keyword}%`); }
 
   if (sort === 'price_asc') sql += ' ORDER BY current_price ASC';
@@ -40,7 +43,7 @@ router.get('/', (req, res) => {
   res.json({ resources: rows.map(enrich) });
 });
 
-router.get('/mine', authRequired, roleRequired('farm'), (req, res) => {
+router.get('/mine', authRequired, (req, res) => {
   sweep();
   const rows = db.prepare('SELECT * FROM resources WHERE farm_id=? ORDER BY created_at DESC').all(req.user.id);
   res.json({ resources: rows.map(enrich) });
@@ -66,15 +69,24 @@ function maskName(name) {
   return name[0] + '**' + name[name.length - 1];
 }
 
-router.post('/', authRequired, roleRequired('farm'), (req, res) => {
-  if (req.user.license_status !== 'approved') return res.status(403).json({ error: '请先完成资质审核' });
-  const farmDep = db.prepare(`SELECT * FROM deposits WHERE user_id=? AND type='farm_quality' AND status IN ('available','frozen')`).get(req.user.id);
-  if (!farmDep) return res.status(403).json({ error: `请先缴纳 ${FARM_DEPOSIT_AMOUNT} 元品质保证金` });
+router.post('/', authRequired, (req, res) => {
+  const kind = req.body.kind === 'demand' ? 'demand' : 'supply';
+
+  if (kind === 'supply') {
+    if (req.user.role !== 'farm') return res.status(403).json({ error: '货源仅限养殖场发布' });
+    if (req.user.license_status !== 'approved') return res.status(403).json({ error: '请先完成资质审核' });
+    const farmDep = db.prepare(`SELECT * FROM deposits WHERE user_id=? AND type='farm_quality' AND status IN ('available','frozen')`).get(req.user.id);
+    if (!farmDep) return res.status(403).json({ error: `请先缴纳 ${FARM_DEPOSIT_AMOUNT} 元品质保证金` });
+  } else {
+    if (req.user.role !== 'buyer') return res.status(403).json({ error: '求购仅限采购商发布' });
+    const buyerDep = db.prepare(`SELECT * FROM deposits WHERE user_id=? AND type='buyer_bid' AND status IN ('available','frozen')`).get(req.user.id);
+    if (!buyerDep) return res.status(403).json({ error: '请先缴纳 200 元采购保证金' });
+  }
 
   const {
-    title, region, chicken_breed, farm_size, egg_color, weight_spec, shell_quality,
+    title, region, province, chicken_breed, farm_size, egg_color, weight_spec, shell_quality,
     freshness_days, quantity, photos, description, start_price, min_increment,
-    duration_hours,
+    duration_hours, unit_label,
   } = req.body;
 
   if (!title || !start_price || !quantity || !duration_hours) {
@@ -83,29 +95,31 @@ router.post('/', authRequired, roleRequired('farm'), (req, res) => {
   const dh = Number(duration_hours);
   if (![1, 2, 3].includes(dh)) return res.status(400).json({ error: '竞拍时长仅支持 1/2/3 小时' });
   const inc = Number(min_increment) || 2;
-  if (inc < 2) return res.status(400).json({ error: '加价幅度不能低于 2 元' });
+  if (inc < 0.5) return res.status(400).json({ error: '加价/降价幅度不能低于 0.5 元' });
 
   const now = Date.now();
   const endAt = now + dh * 60 * 60 * 1000;
   const startPrice = Number(start_price);
+  const initialStatus = kind === 'demand' ? 'auctioning' : 'auctioning';
 
   const info = db.prepare(`
     INSERT INTO resources (
-      farm_id, title, region, chicken_breed, farm_size, egg_color, weight_spec, shell_quality,
+      farm_id, title, region, province, chicken_breed, farm_size, egg_color, weight_spec, shell_quality,
       freshness_days, quantity, photos, description, start_price, min_increment, current_price,
-      start_at, end_at, status, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'auctioning', ?)
+      start_at, end_at, status, created_at, kind, unit_label, review_status
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved')
   `).run(
-    req.user.id, title, region || req.user.region, chicken_breed, farm_size, egg_color, weight_spec, shell_quality,
+    req.user.id, title, region || req.user.region, province || null,
+    chicken_breed, farm_size, egg_color, weight_spec, shell_quality,
     freshness_days, quantity, JSON.stringify(photos || []), description, startPrice, inc, startPrice,
-    now, endAt, now,
+    now, endAt, initialStatus, now, kind, unit_label || '元/箱',
   );
 
   const r = db.prepare('SELECT * FROM resources WHERE id=?').get(info.lastInsertRowid);
   res.json({ resource: enrich(r) });
 });
 
-router.patch('/:id', authRequired, roleRequired('farm'), (req, res) => {
+router.patch('/:id', authRequired, (req, res) => {
   const r = db.prepare('SELECT * FROM resources WHERE id=?').get(req.params.id);
   if (!r) return res.status(404).json({ error: '资源不存在' });
   if (r.farm_id !== req.user.id) return res.status(403).json({ error: '只能修改自己的资源' });
@@ -119,7 +133,7 @@ router.patch('/:id', authRequired, roleRequired('farm'), (req, res) => {
   res.json({ ok: true });
 });
 
-router.post('/:id/cancel', authRequired, roleRequired('farm'), (req, res) => {
+router.post('/:id/cancel', authRequired, (req, res) => {
   const r = db.prepare('SELECT * FROM resources WHERE id=?').get(req.params.id);
   if (!r) return res.status(404).json({ error: '资源不存在' });
   if (r.farm_id !== req.user.id) return res.status(403).json({ error: '只能操作自己的资源' });

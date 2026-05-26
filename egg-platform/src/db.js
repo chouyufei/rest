@@ -149,4 +149,16 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 );
 `);
 
+function addColumnIfMissing(table, column, ddl) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (!cols.find((c) => c.name === column)) {
+    db.prepare(`ALTER TABLE ${table} ADD COLUMN ${ddl}`).run();
+  }
+}
+
+addColumnIfMissing('resources', 'kind', "kind TEXT NOT NULL DEFAULT 'supply'");
+addColumnIfMissing('resources', 'province', 'province TEXT');
+addColumnIfMissing('resources', 'unit_label', "unit_label TEXT DEFAULT '元/箱'");
+addColumnIfMissing('resources', 'review_status', "review_status TEXT DEFAULT 'approved'");
+
 module.exports = db;

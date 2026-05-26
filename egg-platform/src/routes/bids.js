@@ -5,12 +5,17 @@ const { placeBidTx, triggerAutoBids } = require('../services/auction');
 
 const router = express.Router();
 
-router.post('/', authRequired, roleRequired('buyer'), (req, res) => {
+router.post('/', authRequired, (req, res) => {
   const { resource_id, price } = req.body;
   if (!resource_id || !price) return res.status(400).json({ error: '缺少参数' });
+  const r = db.prepare('SELECT * FROM resources WHERE id=?').get(Number(resource_id));
+  if (!r) return res.status(404).json({ error: '资源不存在' });
+  const isSupply = (r.kind || 'supply') === 'supply';
+  if (isSupply && req.user.role !== 'buyer') return res.status(403).json({ error: '货源仅限采购商出价' });
+  if (!isSupply && req.user.role !== 'farm') return res.status(403).json({ error: '求购仅限养殖场应标' });
   try {
-    const r = placeBidTx(Number(resource_id), req.user.id, Number(price), 0, null);
-    res.json({ ok: true, resource: r });
+    const updated = placeBidTx(Number(resource_id), req.user.id, Number(price), 0, null);
+    res.json({ ok: true, resource: updated });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -22,6 +27,7 @@ router.post('/auto', authRequired, roleRequired('buyer'), (req, res) => {
   const r = db.prepare('SELECT * FROM resources WHERE id=?').get(resource_id);
   if (!r) return res.status(404).json({ error: '资源不存在' });
   if (r.status !== 'auctioning') return res.status(400).json({ error: '竞拍未进行中' });
+  if ((r.kind || 'supply') !== 'supply') return res.status(400).json({ error: '求购暂不支持自动出价' });
   const buyerDep = db.prepare(`SELECT * FROM deposits WHERE user_id=? AND type='buyer_bid' AND status IN ('available','frozen')`).get(req.user.id);
   if (!buyerDep) return res.status(403).json({ error: '请先缴纳 200 元竞拍保证金' });
 
@@ -41,7 +47,7 @@ router.delete('/auto/:resource_id', authRequired, roleRequired('buyer'), (req, r
   res.json({ ok: true });
 });
 
-router.get('/mine', authRequired, roleRequired('buyer'), (req, res) => {
+router.get('/mine', authRequired, (req, res) => {
   const rows = db.prepare(`
     SELECT DISTINCT r.*, (r.current_bidder_id = ?) AS leading
     FROM resources r
