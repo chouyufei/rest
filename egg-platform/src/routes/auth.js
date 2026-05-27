@@ -50,10 +50,45 @@ router.patch('/me', authRequired, (req, res) => {
 
 router.post('/qualify', authRequired, (req, res) => {
   if (req.user.role !== 'farm') return res.status(403).json({ error: '只有养殖场需要资质认证' });
-  const { business_license, name, region } = req.body;
-  db.prepare(`UPDATE users SET business_license=?, name=COALESCE(?,name), region=COALESCE(?,region), license_status='pending' WHERE id=?`)
-    .run(business_license, name, region, req.user.id);
-  res.json({ ok: true, message: '资质已提交，等待审核' });
+  const {
+    name, region, address, business_license, contact_name,
+    daily_output, main_products, farm_size_int,
+    license_photos, farm_photos, quarantine_photos,
+  } = req.body;
+
+  if (!name || !contact_name || !address || !business_license) {
+    return res.status(400).json({ error: '请填写鸡场名称/联系人/地址/营业执照编号' });
+  }
+  if (!Array.isArray(license_photos) || !license_photos.length) {
+    return res.status(400).json({ error: '请上传营业执照照片' });
+  }
+  if (!Array.isArray(farm_photos) || farm_photos.length < 1) {
+    return res.status(400).json({ error: '请至少上传 1 张鸡场实景照' });
+  }
+
+  db.prepare(`
+    UPDATE users SET
+      name=COALESCE(?,name),
+      region=COALESCE(?,region),
+      address=COALESCE(?,address),
+      business_license=?,
+      contact_name=?,
+      daily_output=?,
+      main_products=?,
+      farm_size_int=?,
+      license_photos=?,
+      farm_photos=?,
+      quarantine_photos=?,
+      license_status='pending'
+    WHERE id=?
+  `).run(
+    name, region, address, business_license, contact_name,
+    Number(daily_output) || null, main_products || null, Number(farm_size_int) || null,
+    JSON.stringify(license_photos), JSON.stringify(farm_photos),
+    JSON.stringify(quarantine_photos || []),
+    req.user.id,
+  );
+  res.json({ ok: true, message: '资质已提交，平台 1-3 个工作日内审核' });
 });
 
 module.exports = router;

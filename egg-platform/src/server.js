@@ -16,6 +16,8 @@ app.use('/api/orders', require('./routes/orders'));
 app.use('/api/deposits', require('./routes/deposits'));
 app.use('/api/messages', require('./routes/messages'));
 app.use('/api/admin', require('./routes/admin'));
+app.use('/api/upload', require('./routes/upload'));
+app.use('/api/pay', require('./routes/pay'));
 
 app.get('/api/health', (req, res) => {
   sweep();

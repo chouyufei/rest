@@ -161,4 +161,13 @@ addColumnIfMissing('resources', 'province', 'province TEXT');
 addColumnIfMissing('resources', 'unit_label', "unit_label TEXT DEFAULT '元/箱'");
 addColumnIfMissing('resources', 'review_status', "review_status TEXT DEFAULT 'approved'");
 
+addColumnIfMissing('users', 'contact_name', 'contact_name TEXT');
+addColumnIfMissing('users', 'daily_output', 'daily_output INTEGER');
+addColumnIfMissing('users', 'main_products', 'main_products TEXT');
+addColumnIfMissing('users', 'farm_size_int', 'farm_size_int INTEGER');
+addColumnIfMissing('users', 'license_photos', 'license_photos TEXT');
+addColumnIfMissing('users', 'farm_photos', 'farm_photos TEXT');
+addColumnIfMissing('users', 'quarantine_photos', 'quarantine_photos TEXT');
+addColumnIfMissing('users', 'wechat_openid', 'wechat_openid TEXT');
+
 module.exports = db;
