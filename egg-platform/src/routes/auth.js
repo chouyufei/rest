@@ -1,35 +1,104 @@
 const express = require('express');
-const bcrypt = require('bcryptjs');
 const db = require('../db');
 const { sign, authRequired } = require('../middleware/auth');
+const otpStore = require('../services/otp');
+const sms = require('../services/sms');
+const wechat = require('../services/wechat');
 
 const router = express.Router();
 
-router.post('/send-otp', (req, res) => {
+router.get('/login-modes', (req, res) => {
+  res.json({
+    sms: { live: sms.isLive, provider: sms.provider || 'demo' },
+    wechat: { live: wechat.isLive, hint: wechat.isLive ? '' : '未配置 WECHAT_APP_SECRET，演示模式使用沙箱账号' },
+  });
+});
+
+router.post('/send-otp', async (req, res) => {
   const { phone } = req.body;
   if (!phone || !/^1\d{10}$/.test(phone)) return res.status(400).json({ error: '手机号格式错误' });
-  return res.json({ ok: true, otp: '123456', message: '验证码已发送（演示用：123456）' });
+  try {
+    const r = await sms.send(phone);
+    res.json({
+      ok: true,
+      demo: !!r.demo,
+      message: r.demo ? '演示模式：验证码固定为 123456' : '验证码已发送至 ' + maskPhone(phone),
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 router.post('/login', (req, res) => {
   const { phone, otp, role, name } = req.body;
   if (!phone || !otp) return res.status(400).json({ error: '缺少手机号或验证码' });
-  if (otp !== '123456') return res.status(400).json({ error: '验证码错误（演示请输入 123456）' });
+  if (!/^1\d{10}$/.test(phone)) return res.status(400).json({ error: '手机号格式错误' });
+  const check = otpStore.verify(phone, otp);
+  if (!check.ok) return res.status(400).json({ error: check.reason });
 
-  let user = db.prepare('SELECT * FROM users WHERE phone = ?').get(phone);
-  if (!user) {
-    const safeRole = ['farm', 'buyer', 'admin'].includes(role) ? role : 'buyer';
-    const info = db.prepare(`
-      INSERT INTO users (phone, role, name, license_status, created_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(phone, safeRole, name || `用户${phone.slice(-4)}`, safeRole === 'farm' ? 'pending' : 'none', Date.now());
-    user = db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
-  }
+  const user = upsertUser({ phone, role, name });
   if (user.banned) return res.status(403).json({ error: '账户已被冻结' });
 
-  const token = sign(user);
-  res.json({ token, user });
+  res.json({ token: sign(user), user });
 });
+
+router.post('/wechat-login', async (req, res) => {
+  const { code, role, name } = req.body;
+  if (!code) return res.status(400).json({ error: '缺少微信登录 code' });
+  try {
+    const session = await wechat.code2session(code);
+    if (!session.openid) return res.status(400).json({ error: '微信换取 openid 失败' });
+
+    let user = db.prepare('SELECT * FROM users WHERE wechat_openid = ?').get(session.openid);
+    if (!user) {
+      const safeRole = ['farm', 'buyer', 'admin'].includes(role) ? role : 'buyer';
+      const placeholderPhone = 'wx_' + session.openid.slice(0, 16);
+      const info = db.prepare(`
+        INSERT INTO users (phone, role, name, license_status, wechat_openid, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(
+        placeholderPhone, safeRole, name || (safeRole === 'farm' ? '微信养殖场' : '微信采购商'),
+        safeRole === 'farm' ? 'pending' : 'none', session.openid, Date.now(),
+      );
+      user = db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
+    }
+    if (user.banned) return res.status(403).json({ error: '账户已被冻结' });
+
+    res.json({
+      token: sign(user),
+      user,
+      demo: !!session.demo,
+      needs_phone: !user.phone || user.phone.startsWith('wx_'),
+    });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.post('/bind-phone', authRequired, (req, res) => {
+  const { phone, otp } = req.body;
+  if (!phone || !otp) return res.status(400).json({ error: '缺少手机号或验证码' });
+  if (!/^1\d{10}$/.test(phone)) return res.status(400).json({ error: '手机号格式错误' });
+  const check = otpStore.verify(phone, otp);
+  if (!check.ok) return res.status(400).json({ error: check.reason });
+  const existing = db.prepare('SELECT id FROM users WHERE phone=? AND id != ?').get(phone, req.user.id);
+  if (existing) return res.status(400).json({ error: '该手机号已被其他账号绑定' });
+  db.prepare('UPDATE users SET phone=? WHERE id=?').run(phone, req.user.id);
+  res.json({ ok: true, user: db.prepare('SELECT * FROM users WHERE id=?').get(req.user.id) });
+});
+
+function upsertUser({ phone, role, name }) {
+  let user = db.prepare('SELECT * FROM users WHERE phone = ?').get(phone);
+  if (user) return user;
+  const safeRole = ['farm', 'buyer', 'admin'].includes(role) ? role : 'buyer';
+  const info = db.prepare(`
+    INSERT INTO users (phone, role, name, license_status, created_at)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(phone, safeRole, name || `用户${phone.slice(-4)}`, safeRole === 'farm' ? 'pending' : 'none', Date.now());
+  return db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
+}
+
+function maskPhone(p) { return p.slice(0, 3) + '****' + p.slice(-4); }
 
 router.get('/me', authRequired, (req, res) => {
   res.json({ user: req.user });
