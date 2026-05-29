@@ -13,15 +13,41 @@ const WECHAT_MCH_ID = process.env.WECHAT_MCH_ID || '';
 const WECHAT_API_V3_KEY = process.env.WECHAT_API_V3_KEY || '';
 const WECHAT_SERIAL_NO = process.env.WECHAT_SERIAL_NO || '';
 const WECHAT_PRIVATE_KEY = process.env.WECHAT_PRIVATE_KEY || '';
+const WECHAT_PUBLIC_KEY = process.env.WECHAT_PUBLIC_KEY || '';
 const WECHAT_NOTIFY_URL = process.env.WECHAT_NOTIFY_URL || '';
 
-const isLiveMode = !!(WECHAT_APP_ID && WECHAT_MCH_ID && WECHAT_API_V3_KEY && WECHAT_SERIAL_NO && WECHAT_PRIVATE_KEY && WECHAT_NOTIFY_URL);
+const hasAllPayEnv = !!(WECHAT_APP_ID && WECHAT_MCH_ID && WECHAT_API_V3_KEY &&
+  WECHAT_SERIAL_NO && WECHAT_PRIVATE_KEY && WECHAT_PUBLIC_KEY && WECHAT_NOTIFY_URL);
+
+let pay = null;
+if (hasAllPayEnv) {
+  try {
+    const mod = require('wechatpay-node-v3');
+    const WxPay = mod.default || mod;
+    pay = new WxPay({
+      appid: WECHAT_APP_ID,
+      mchid: WECHAT_MCH_ID,
+      publicKey: Buffer.from(WECHAT_PUBLIC_KEY),
+      privateKey: Buffer.from(WECHAT_PRIVATE_KEY),
+      key: WECHAT_API_V3_KEY,
+    });
+    console.log('微信支付已启用 mch_id=' + WECHAT_MCH_ID);
+  } catch (e) {
+    console.error('微信支付 SDK 初始化失败:', e.message);
+    pay = null;
+  }
+}
+
+const isLive = !!pay;
 
 router.get('/mode', (req, res) => {
   res.json({
-    live: isLiveMode,
-    mode: isLiveMode ? 'wechat_pay' : 'demo',
-    message: isLiveMode ? '已接入微信支付' : '演示模式：跳过支付直接缴纳（生产请配置微信支付环境变量）',
+    live: isLive,
+    mode: isLive ? 'wechat_pay' : 'demo',
+    message: isLive
+      ? '已接入微信支付'
+      : (hasAllPayEnv ? 'SDK 初始化失败，请检查证书格式' : '演示模式：跳过支付直接缴纳'),
+    mch_id: isLive ? WECHAT_MCH_ID : undefined,
   });
 });
 
@@ -42,29 +68,155 @@ router.post('/create-order', authRequired, async (req, res) => {
   if (existing) return res.json({ ok: true, paid: true, message: '已缴纳保证金' });
 
   const amount = type === 'farm_quality' ? FARM_DEPOSIT : BUYER_DEPOSIT;
-  const orderNo = 'DEP' + Date.now() + Math.floor(Math.random() * 1000);
 
-  if (!isLiveMode) {
+  if (!isLive) {
+    const orderNo = 'DEMO' + Date.now() + Math.floor(Math.random() * 1000);
     const info = db.prepare(`
       INSERT INTO deposits (user_id, type, amount, status, note, paid_at)
       VALUES (?, ?, ?, 'available', ?, ?)
-    `).run(req.user.id, type, amount, `演示模式订单 ${orderNo}`, Date.now());
+    `).run(req.user.id, type, amount, `演示订单 ${orderNo}`, Date.now());
     const dep = db.prepare('SELECT * FROM deposits WHERE id=?').get(info.lastInsertRowid);
-    return res.json({ ok: true, demo: true, deposit: dep, message: `[演示] 已缴纳 ${amount} 元保证金（生产请配置微信支付）` });
+    return res.json({ ok: true, demo: true, deposit: dep, message: `[演示] 已缴纳 ${amount} 元保证金` });
   }
 
-  return res.status(501).json({
-    error: '微信支付尚未配置完整',
-    todo: [
-      '需要设置环境变量: WECHAT_APP_ID, WECHAT_MCH_ID, WECHAT_API_V3_KEY, WECHAT_SERIAL_NO, WECHAT_PRIVATE_KEY, WECHAT_NOTIFY_URL',
-      '需在 routes/pay.js 中调用微信支付下单接口（POST /v3/pay/transactions/jsapi）',
-      '需实现 /api/pay/notify 接收异步支付结果回调',
-    ],
-  });
+  if (!req.user.wechat_openid) {
+    return res.status(400).json({ error: '需先用微信登录获取 openid 才能支付（微信小程序 JSAPI 要求）' });
+  }
+
+  const outTradeNo = 'EGGDEP' + Date.now() + req.user.id;
+  const totalFen = Math.round(amount * 100);
+
+  db.prepare(`
+    INSERT INTO pay_orders (out_trade_no, user_id, deposit_type, amount, status, created_at)
+    VALUES (?, ?, ?, ?, 'pending', ?)
+  `).run(outTradeNo, req.user.id, type, amount, Date.now());
+
+  try {
+    const result = await pay.transactions_jsapi({
+      description: `蛋速达${type === 'farm_quality' ? '品质' : '竞拍'}保证金`,
+      out_trade_no: outTradeNo,
+      notify_url: WECHAT_NOTIFY_URL,
+      amount: { total: totalFen, currency: 'CNY' },
+      payer: { openid: req.user.wechat_openid },
+    });
+
+    if (result.prepay_id) {
+      db.prepare('UPDATE pay_orders SET prepay_id=? WHERE out_trade_no=?')
+        .run(result.prepay_id, outTradeNo);
+    }
+
+    if (result.status && result.status !== 200) {
+      db.prepare(`UPDATE pay_orders SET status='cancelled' WHERE out_trade_no=?`).run(outTradeNo);
+      return res.status(400).json({ error: '微信下单失败: ' + (result.error || JSON.stringify(result)) });
+    }
+
+    return res.json({
+      ok: true,
+      timeStamp: result.timeStamp,
+      nonceStr: result.nonceStr,
+      package: result.package,
+      signType: result.signType || 'RSA',
+      paySign: result.paySign,
+      out_trade_no: outTradeNo,
+    });
+  } catch (e) {
+    console.error('微信下单失败:', e);
+    db.prepare(`UPDATE pay_orders SET status='cancelled' WHERE out_trade_no=?`).run(outTradeNo);
+    return res.status(500).json({ error: '微信下单失败: ' + (e.message || String(e)) });
+  }
 });
 
-router.post('/notify', express.raw({ type: '*/*' }), (req, res) => {
+router.post('/notify', async (req, res) => {
+  const rawBody = req.rawBody ? req.rawBody.toString('utf8') : JSON.stringify(req.body || {});
+  const h = req.headers;
+
+  if (!pay) {
+    return res.status(503).json({ code: 'FAIL', message: '支付未启用' });
+  }
+
+  try {
+    const verifyOk = await Promise.resolve(pay.verifySign({
+      timestamp: h['wechatpay-timestamp'],
+      nonce: h['wechatpay-nonce'],
+      body: rawBody,
+      serial: h['wechatpay-serial'],
+      signature: h['wechatpay-signature'],
+    })).catch((e) => { console.warn('verifySign error:', e.message); return null; });
+    if (verifyOk === false) {
+      console.warn('微信回调验签失败');
+    }
+  } catch (e) {
+    console.warn('验签异常:', e.message);
+  }
+
+  let json;
+  try { json = JSON.parse(rawBody); }
+  catch (e) { return res.status(400).json({ code: 'FAIL', message: '解析失败' }); }
+
+  if (!json.resource) {
+    return res.json({ code: 'SUCCESS', message: '无 resource，已忽略' });
+  }
+
+  let payload;
+  try {
+    const r = json.resource;
+    const decrypted = pay.decipher_gcm(r.ciphertext, r.associated_data, r.nonce, WECHAT_API_V3_KEY);
+    payload = typeof decrypted === 'string' ? JSON.parse(decrypted) : decrypted;
+  } catch (e) {
+    console.error('回调解密失败:', e);
+    return res.status(500).json({ code: 'FAIL', message: '解密失败' });
+  }
+
+  const { out_trade_no, transaction_id, trade_state } = payload;
+  if (trade_state !== 'SUCCESS') {
+    return res.json({ code: 'SUCCESS', message: 'ack non-success' });
+  }
+
+  const order = db.prepare('SELECT * FROM pay_orders WHERE out_trade_no=?').get(out_trade_no);
+  if (!order) return res.json({ code: 'SUCCESS', message: '未找到订单，已忽略' });
+  if (order.status === 'paid') return res.json({ code: 'SUCCESS', message: '已处理' });
+
+  fulfillOrder(order, transaction_id);
   res.json({ code: 'SUCCESS', message: '成功' });
 });
+
+router.get('/check/:out_trade_no', authRequired, async (req, res) => {
+  const order = db.prepare('SELECT * FROM pay_orders WHERE out_trade_no=? AND user_id=?')
+    .get(req.params.out_trade_no, req.user.id);
+  if (!order) return res.status(404).json({ error: '订单不存在' });
+  if (order.status === 'paid') return res.json({ paid: true, order });
+  if (!isLive) return res.json({ paid: false, order });
+
+  try {
+    const result = await pay.query({ out_trade_no: req.params.out_trade_no });
+    if (result && result.trade_state === 'SUCCESS') {
+      fulfillOrder(order, result.transaction_id);
+      const fresh = db.prepare('SELECT * FROM pay_orders WHERE id=?').get(order.id);
+      return res.json({ paid: true, order: fresh });
+    }
+    res.json({ paid: false, order, trade_state: result && result.trade_state });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+function fulfillOrder(order, transactionId) {
+  const now = Date.now();
+  const tx = db.transaction(() => {
+    db.prepare(`UPDATE pay_orders SET status='paid', transaction_id=?, paid_at=? WHERE id=? AND status='pending'`)
+      .run(transactionId, now, order.id);
+    const exists = db.prepare(`SELECT id FROM deposits WHERE user_id=? AND type=? AND status IN ('available','frozen')`)
+      .get(order.user_id, order.deposit_type);
+    if (!exists) {
+      db.prepare(`
+        INSERT INTO deposits (user_id, type, amount, status, note, paid_at)
+        VALUES (?, ?, ?, 'available', ?, ?)
+      `).run(order.user_id, order.deposit_type, order.amount, `微信支付 ${transactionId}`, now);
+    }
+  });
+  tx();
+  notify(order.user_id, 'deposit_paid', '保证金已缴纳',
+    `${order.deposit_type === 'farm_quality' ? '品质' : '竞拍'}保证金 ${order.amount} 元已通过微信支付完成`, null);
+}
 
 module.exports = router;

@@ -147,6 +147,22 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   FOREIGN KEY (order_id) REFERENCES orders(id),
   FOREIGN KEY (sender_id) REFERENCES users(id)
 );
+
+CREATE TABLE IF NOT EXISTS pay_orders (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  out_trade_no TEXT UNIQUE NOT NULL,
+  user_id INTEGER NOT NULL,
+  deposit_type TEXT NOT NULL,
+  amount REAL NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','paid','cancelled','refunded')),
+  transaction_id TEXT,
+  prepay_id TEXT,
+  paid_at INTEGER,
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (user_id) REFERENCES users(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pay_orders_user ON pay_orders(user_id, status);
 `);
 
 function addColumnIfMissing(table, column, ddl) {
