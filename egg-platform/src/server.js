@@ -24,7 +24,7 @@ app.use('/api/pay', require('./routes/pay'));
 
 app.get('/api/health', (req, res) => {
   sweep();
-  res.json({ ok: true, name: '风伯乐 API', time: Date.now() });
+  res.json({ ok: true, name: '凤伯乐 API', time: Date.now() });
 });
 
 app.use((err, req, res, next) => {
@@ -43,5 +43,5 @@ setInterval(() => {
 }, 5000);
 
 app.listen(PORT, () => {
-  console.log(`风伯乐 API running on http://localhost:${PORT}`);
+  console.log(`凤伯乐 API running on http://localhost:${PORT}`);
 });

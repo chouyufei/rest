@@ -1,7 +1,7 @@
 {
   "name": "egg-platform-api",
   "version": "1.0.0",
-  "description": "风伯乐 (FengBoLe) — egg auction platform REST API",
+  "description": "凤伯乐 (FengBoLe) — egg auction platform REST API",
   "main": "src/server.js",
   "type": "commonjs",
   "scripts": {
