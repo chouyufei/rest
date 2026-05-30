@@ -2,11 +2,9 @@ const express = require('express');
 const db = require('../db');
 const { authRequired } = require('../middleware/auth');
 const { notify } = require('../services/notification');
+const { FARM_DEPOSIT_AMOUNT: FARM_DEPOSIT, BUYER_DEPOSIT_AMOUNT: BUYER_DEPOSIT } = require('../services/auction');
 
 const router = express.Router();
-
-const FARM_DEPOSIT = 1000;
-const BUYER_DEPOSIT = 200;
 
 const WECHAT_APP_ID = process.env.WECHAT_APP_ID || '';
 const WECHAT_MCH_ID = process.env.WECHAT_MCH_ID || '';
