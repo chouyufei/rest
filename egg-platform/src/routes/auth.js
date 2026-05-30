@@ -50,23 +50,24 @@ router.post('/wechat-login', async (req, res) => {
     if (!session.openid) return res.status(400).json({ error: '微信换取 openid 失败' });
 
     let user = db.prepare('SELECT * FROM users WHERE wechat_openid = ?').get(session.openid);
-    const safeRole = ['farm', 'buyer', 'admin'].includes(role) ? role : 'buyer';
+    const requestedRole = ['farm', 'buyer'].includes(role) ? role : null;
     if (!user) {
+      const createRole = requestedRole || 'buyer';
       const placeholderPhone = 'wx_' + session.openid.slice(0, 16);
       const info = db.prepare(`
         INSERT INTO users (phone, role, name, license_status, wechat_openid, created_at)
         VALUES (?, ?, ?, ?, ?, ?)
       `).run(
-        placeholderPhone, safeRole, name || (safeRole === 'farm' ? '微信养殖场' : '微信采购商'),
-        safeRole === 'farm' ? 'pending' : 'none', session.openid, Date.now(),
+        placeholderPhone, createRole, name || (createRole === 'farm' ? '微信养殖场' : '微信采购商'),
+        createRole === 'farm' ? 'pending' : 'none', session.openid, Date.now(),
       );
       user = db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
-    } else if (user.role !== safeRole && user.role !== 'admin' && safeRole !== 'admin') {
+    } else if (requestedRole && requestedRole !== user.role && user.role !== 'admin') {
       let newLicStatus = user.license_status;
-      if (safeRole === 'farm' && (!newLicStatus || newLicStatus === 'none')) newLicStatus = 'pending';
-      if (safeRole === 'buyer' && newLicStatus === 'pending') newLicStatus = 'none';
+      if (requestedRole === 'farm' && (!newLicStatus || newLicStatus === 'none')) newLicStatus = 'pending';
+      if (requestedRole === 'buyer' && newLicStatus === 'pending') newLicStatus = 'none';
       db.prepare('UPDATE users SET role=?, license_status=? WHERE id=?')
-        .run(safeRole, newLicStatus, user.id);
+        .run(requestedRole, newLicStatus, user.id);
       user = db.prepare('SELECT * FROM users WHERE id=?').get(user.id);
     }
     if (user.banned) return res.status(403).json({ error: '账户已被冻结' });
@@ -111,23 +112,24 @@ router.post('/bind-phone', authRequired, (req, res) => {
 });
 
 function upsertUser({ phone, role, name }) {
-  const safeRole = ['farm', 'buyer', 'admin'].includes(role) ? role : 'buyer';
+  const requestedRole = ['farm', 'buyer'].includes(role) ? role : null;
   let user = db.prepare('SELECT * FROM users WHERE phone = ?').get(phone);
   if (user) {
-    if (user.role !== safeRole && user.role !== 'admin' && safeRole !== 'admin') {
+    if (requestedRole && requestedRole !== user.role && user.role !== 'admin') {
       let newLicStatus = user.license_status;
-      if (safeRole === 'farm' && (!newLicStatus || newLicStatus === 'none')) newLicStatus = 'pending';
-      if (safeRole === 'buyer' && newLicStatus === 'pending') newLicStatus = 'none';
+      if (requestedRole === 'farm' && (!newLicStatus || newLicStatus === 'none')) newLicStatus = 'pending';
+      if (requestedRole === 'buyer' && newLicStatus === 'pending') newLicStatus = 'none';
       db.prepare('UPDATE users SET role=?, license_status=? WHERE id=?')
-        .run(safeRole, newLicStatus, user.id);
+        .run(requestedRole, newLicStatus, user.id);
       user = db.prepare('SELECT * FROM users WHERE id=?').get(user.id);
     }
     return user;
   }
+  const createRole = requestedRole || 'buyer';
   const info = db.prepare(`
     INSERT INTO users (phone, role, name, license_status, created_at)
     VALUES (?, ?, ?, ?, ?)
-  `).run(phone, safeRole, name || `用户${phone.slice(-4)}`, safeRole === 'farm' ? 'pending' : 'none', Date.now());
+  `).run(phone, createRole, name || `用户${phone.slice(-4)}`, createRole === 'farm' ? 'pending' : 'none', Date.now());
   return db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
 }
 
