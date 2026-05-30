@@ -82,6 +82,22 @@ router.post('/wechat-login', async (req, res) => {
   }
 });
 
+router.post('/switch-role', authRequired, (req, res) => {
+  const { role } = req.body;
+  if (!['farm', 'buyer'].includes(role)) return res.status(400).json({ error: '只能切换为 farm 或 buyer' });
+  if (req.user.role === 'admin') return res.status(403).json({ error: '管理员账号不可切换' });
+  if (req.user.role === role) {
+    return res.json({ ok: true, user: req.user });
+  }
+  let newLicStatus = req.user.license_status;
+  if (role === 'farm' && (!newLicStatus || newLicStatus === 'none')) newLicStatus = 'pending';
+  if (role === 'buyer' && newLicStatus === 'pending') newLicStatus = 'none';
+  db.prepare('UPDATE users SET role=?, license_status=? WHERE id=?')
+    .run(role, newLicStatus, req.user.id);
+  const user = db.prepare('SELECT * FROM users WHERE id=?').get(req.user.id);
+  res.json({ ok: true, user });
+});
+
 router.post('/bind-phone', authRequired, (req, res) => {
   const { phone, otp } = req.body;
   if (!phone || !otp) return res.status(400).json({ error: '缺少手机号或验证码' });
