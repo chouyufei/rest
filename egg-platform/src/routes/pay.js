@@ -95,7 +95,7 @@ router.post('/create-order', authRequired, async (req, res) => {
 
   try {
     const result = await pay.transactions_jsapi({
-      description: `蛋速达${type === 'farm_quality' ? '品质' : '竞拍'}保证金`,
+      description: `风伯乐${type === 'farm_quality' ? '品质' : '竞拍'}保证金`,
       out_trade_no: outTradeNo,
       notify_url: WECHAT_NOTIFY_URL,
       amount: { total: totalFen, currency: 'CNY' },

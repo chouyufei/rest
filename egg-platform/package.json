@@ -1,7 +1,7 @@
 {
   "name": "egg-platform-api",
   "version": "1.0.0",
-  "description": "蛋速达 (DanSuDa) — egg auction platform REST API",
+  "description": "风伯乐 (FengBoLe) — egg auction platform REST API",
   "main": "src/server.js",
   "type": "commonjs",
   "scripts": {

@@ -1,7 +1,7 @@
 const jwt = require('jsonwebtoken');
 const db = require('../db');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'dansuda-dev-secret-change-in-prod';
+const JWT_SECRET = process.env.JWT_SECRET || 'fengbole-dev-secret-change-in-prod';
 
 function sign(user) {
   return jwt.sign({ id: user.id, role: user.role, phone: user.phone }, JWT_SECRET, { expiresIn: '30d' });
