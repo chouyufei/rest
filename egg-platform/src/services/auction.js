@@ -5,7 +5,7 @@ const ANTI_SNIPE_WINDOW_MS = 5 * 60 * 1000;
 const EXTENSION_MS = 5 * 60 * 1000;
 const MAX_EXTENSIONS = 3;
 const FARM_DEPOSIT_AMOUNT = Number(process.env.FARM_DEPOSIT_AMOUNT) || 0.1;
-const BUYER_DEPOSIT_AMOUNT = Number(process.env.BUYER_DEPOSIT_AMOUNT) || 200;
+const BUYER_DEPOSIT_AMOUNT = Number(process.env.BUYER_DEPOSIT_AMOUNT) || 0.1;
 
 function getResource(id) {
   return db.prepare('SELECT * FROM resources WHERE id = ?').get(id);
