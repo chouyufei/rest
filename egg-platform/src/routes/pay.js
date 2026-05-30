@@ -27,11 +27,15 @@ if (hasAllPayEnv) {
     pay = new WxPay({
       appid: WECHAT_APP_ID,
       mchid: WECHAT_MCH_ID,
+      serial_no: WECHAT_SERIAL_NO,
       publicKey: Buffer.from(WECHAT_PUBLIC_KEY),
       privateKey: Buffer.from(WECHAT_PRIVATE_KEY),
       key: WECHAT_API_V3_KEY,
     });
-    console.log('微信支付已启用 mch_id=' + WECHAT_MCH_ID);
+    console.log('微信支付已启用 mch_id=' + WECHAT_MCH_ID + ' serial_no=' + WECHAT_SERIAL_NO.slice(0, 12) + '…');
+    pay.get_certificates(WECHAT_API_V3_KEY)
+      .then((certs) => console.log('已预热平台证书 ' + (certs && certs.length) + ' 张'))
+      .catch((e) => console.warn('预热平台证书失败（首次回调时会自动拉取）:', e.message));
   } catch (e) {
     console.error('微信支付 SDK 初始化失败:', e.message);
     pay = null;
@@ -100,53 +104,55 @@ router.post('/create-order', authRequired, async (req, res) => {
       payer: { openid: req.user.wechat_openid },
     });
 
-    if (result.prepay_id) {
-      db.prepare('UPDATE pay_orders SET prepay_id=? WHERE out_trade_no=?')
-        .run(result.prepay_id, outTradeNo);
-    }
-
-    if (result.status && result.status !== 200) {
+    if (result.status !== 200 || !result.data || !result.data.paySign) {
       db.prepare(`UPDATE pay_orders SET status='cancelled' WHERE out_trade_no=?`).run(outTradeNo);
-      return res.status(400).json({ error: '微信下单失败: ' + (result.error || JSON.stringify(result)) });
+      const errMsg = (result.error && (result.error.message || result.error.code)) ||
+        (result.errRaw && JSON.stringify(result.errRaw)) ||
+        ('HTTP ' + result.status);
+      console.error('微信下单失败:', errMsg);
+      return res.status(400).json({ error: '微信下单失败: ' + errMsg });
     }
 
+    const p = result.data;
     return res.json({
       ok: true,
-      timeStamp: result.timeStamp,
-      nonceStr: result.nonceStr,
-      package: result.package,
-      signType: result.signType || 'RSA',
-      paySign: result.paySign,
+      timeStamp: p.timeStamp,
+      nonceStr: p.nonceStr,
+      package: p.package,
+      signType: p.signType || 'RSA',
+      paySign: p.paySign,
       out_trade_no: outTradeNo,
     });
   } catch (e) {
-    console.error('微信下单失败:', e);
+    console.error('微信下单异常:', e);
     db.prepare(`UPDATE pay_orders SET status='cancelled' WHERE out_trade_no=?`).run(outTradeNo);
-    return res.status(500).json({ error: '微信下单失败: ' + (e.message || String(e)) });
+    return res.status(500).json({ error: '微信下单异常: ' + (e.message || String(e)) });
   }
 });
 
 router.post('/notify', async (req, res) => {
+  if (!pay) return res.status(503).json({ code: 'FAIL', message: '支付未启用' });
+
   const rawBody = req.rawBody ? req.rawBody.toString('utf8') : JSON.stringify(req.body || {});
   const h = req.headers;
 
-  if (!pay) {
-    return res.status(503).json({ code: 'FAIL', message: '支付未启用' });
-  }
-
+  let verified = false;
   try {
-    const verifyOk = await Promise.resolve(pay.verifySign({
+    verified = await pay.verifySign({
       timestamp: h['wechatpay-timestamp'],
       nonce: h['wechatpay-nonce'],
       body: rawBody,
       serial: h['wechatpay-serial'],
       signature: h['wechatpay-signature'],
-    })).catch((e) => { console.warn('verifySign error:', e.message); return null; });
-    if (verifyOk === false) {
-      console.warn('微信回调验签失败');
-    }
+      apiSecret: WECHAT_API_V3_KEY,
+    });
   } catch (e) {
-    console.warn('验签异常:', e.message);
+    console.error('回调验签异常:', e.message);
+    return res.status(401).json({ code: 'FAIL', message: '验签失败: ' + e.message });
+  }
+  if (!verified) {
+    console.warn('回调验签失败（signature mismatch）');
+    return res.status(401).json({ code: 'FAIL', message: '验签失败' });
   }
 
   let json;
@@ -160,8 +166,7 @@ router.post('/notify', async (req, res) => {
   let payload;
   try {
     const r = json.resource;
-    const decrypted = pay.decipher_gcm(r.ciphertext, r.associated_data, r.nonce, WECHAT_API_V3_KEY);
-    payload = typeof decrypted === 'string' ? JSON.parse(decrypted) : decrypted;
+    payload = pay.decipher_gcm(r.ciphertext, r.associated_data, r.nonce);
   } catch (e) {
     console.error('回调解密失败:', e);
     return res.status(500).json({ code: 'FAIL', message: '解密失败' });
@@ -169,7 +174,7 @@ router.post('/notify', async (req, res) => {
 
   const { out_trade_no, transaction_id, trade_state } = payload;
   if (trade_state !== 'SUCCESS') {
-    return res.json({ code: 'SUCCESS', message: 'ack non-success' });
+    return res.json({ code: 'SUCCESS', message: 'ack non-success: ' + trade_state });
   }
 
   const order = db.prepare('SELECT * FROM pay_orders WHERE out_trade_no=?').get(out_trade_no);
@@ -189,12 +194,16 @@ router.get('/check/:out_trade_no', authRequired, async (req, res) => {
 
   try {
     const result = await pay.query({ out_trade_no: req.params.out_trade_no });
-    if (result && result.trade_state === 'SUCCESS') {
-      fulfillOrder(order, result.transaction_id);
+    if (result.status === 200 && result.data && result.data.trade_state === 'SUCCESS') {
+      fulfillOrder(order, result.data.transaction_id);
       const fresh = db.prepare('SELECT * FROM pay_orders WHERE id=?').get(order.id);
       return res.json({ paid: true, order: fresh });
     }
-    res.json({ paid: false, order, trade_state: result && result.trade_state });
+    res.json({
+      paid: false,
+      order,
+      trade_state: result.data && result.data.trade_state,
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
