@@ -1,10 +1,58 @@
 const express = require('express');
+const bcrypt = require('bcryptjs');
 const db = require('../db');
 const { authRequired, roleRequired } = require('../middleware/auth');
 const { notify } = require('../services/notification');
 
 const router = express.Router();
 router.use(authRequired, roleRequired('admin'));
+
+router.get('/admins', (req, res) => {
+  const rows = db.prepare(`
+    SELECT id, username, name, phone, created_at, banned
+    FROM users WHERE role='admin' AND username IS NOT NULL
+    ORDER BY created_at ASC
+  `).all();
+  res.json({ admins: rows });
+});
+
+router.post('/admins', (req, res) => {
+  const { username, password, name } = req.body;
+  if (!username || !password) return res.status(400).json({ error: '请填写账号和密码' });
+  if (!/^[a-zA-Z0-9_]{3,20}$/.test(username)) return res.status(400).json({ error: '账号需 3-20 位字母数字下划线' });
+  if (String(password).length < 6) return res.status(400).json({ error: '密码至少 6 位' });
+  const exists = db.prepare("SELECT id FROM users WHERE username=?").get(username);
+  if (exists) return res.status(400).json({ error: '账号已存在' });
+  const hashed = bcrypt.hashSync(password, 10);
+  const placeholderPhone = 'admin_' + username + '_' + Date.now().toString(36);
+  const info = db.prepare(`
+    INSERT INTO users (phone, username, password, name, role, license_status, created_at)
+    VALUES (?, ?, ?, ?, 'admin', 'none', ?)
+  `).run(placeholderPhone, username, hashed, name || username, Date.now());
+  const u = db.prepare('SELECT id, username, name, phone, created_at FROM users WHERE id=?').get(info.lastInsertRowid);
+  res.json({ ok: true, admin: u });
+});
+
+router.post('/admins/:id/reset-password', (req, res) => {
+  const { new_password } = req.body;
+  if (!new_password || String(new_password).length < 6) return res.status(400).json({ error: '密码至少 6 位' });
+  const target = db.prepare("SELECT id, role FROM users WHERE id=?").get(req.params.id);
+  if (!target || target.role !== 'admin') return res.status(404).json({ error: '管理员不存在' });
+  db.prepare('UPDATE users SET password=? WHERE id=?').run(bcrypt.hashSync(new_password, 10), target.id);
+  res.json({ ok: true, message: '密码已重置' });
+});
+
+router.delete('/admins/:id', (req, res) => {
+  const id = Number(req.params.id);
+  if (id === req.user.id) return res.status(400).json({ error: '不能删除自己' });
+  const target = db.prepare("SELECT id, role, username FROM users WHERE id=?").get(id);
+  if (!target || target.role !== 'admin') return res.status(404).json({ error: '管理员不存在' });
+  if (target.username === 'admin') return res.status(400).json({ error: '默认 admin 账号不可删除' });
+  const remaining = db.prepare("SELECT COUNT(*) c FROM users WHERE role='admin' AND banned=0").get().c;
+  if (remaining <= 1) return res.status(400).json({ error: '至少要保留 1 个管理员' });
+  db.prepare("UPDATE users SET banned=1, username=NULL WHERE id=?").run(id);
+  res.json({ ok: true });
+});
 
 router.get('/stats', (req, res) => {
   const farmCount = db.prepare("SELECT COUNT(*) c FROM users WHERE role='farm'").get().c;

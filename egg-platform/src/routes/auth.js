@@ -1,11 +1,37 @@
 const express = require('express');
+const bcrypt = require('bcryptjs');
 const db = require('../db');
-const { sign, authRequired } = require('../middleware/auth');
+const { sign, authRequired, roleRequired } = require('../middleware/auth');
 const otpStore = require('../services/otp');
 const sms = require('../services/sms');
 const wechat = require('../services/wechat');
 
 const router = express.Router();
+
+router.post('/admin-login', (req, res) => {
+  const { username, password } = req.body;
+  if (!username || !password) return res.status(400).json({ error: '缺少账号或密码' });
+  const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
+  if (!user || !user.password) return res.status(401).json({ error: '账号不存在或未设置密码' });
+  if (user.role !== 'admin') return res.status(403).json({ error: '该账号非管理员' });
+  if (user.banned) return res.status(403).json({ error: '账户已被冻结' });
+  if (!bcrypt.compareSync(password, user.password)) return res.status(401).json({ error: '密码错误' });
+  const { password: _p, ...safeUser } = user;
+  res.json({ token: sign(user), user: safeUser });
+});
+
+router.post('/change-password', authRequired, roleRequired('admin'), (req, res) => {
+  const { current_password, new_password } = req.body;
+  if (!current_password || !new_password) return res.status(400).json({ error: '请填写当前密码和新密码' });
+  if (String(new_password).length < 6) return res.status(400).json({ error: '新密码至少 6 位' });
+  const me = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+  if (!me.password || !bcrypt.compareSync(current_password, me.password)) {
+    return res.status(401).json({ error: '当前密码错误' });
+  }
+  const hashed = bcrypt.hashSync(new_password, 10);
+  db.prepare('UPDATE users SET password = ? WHERE id = ?').run(hashed, req.user.id);
+  res.json({ ok: true, message: '密码已修改' });
+});
 
 router.get('/login-modes', (req, res) => {
   res.json({

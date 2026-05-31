@@ -185,5 +185,25 @@ addColumnIfMissing('users', 'license_photos', 'license_photos TEXT');
 addColumnIfMissing('users', 'farm_photos', 'farm_photos TEXT');
 addColumnIfMissing('users', 'quarantine_photos', 'quarantine_photos TEXT');
 addColumnIfMissing('users', 'wechat_openid', 'wechat_openid TEXT');
+addColumnIfMissing('users', 'username', 'username TEXT');
+
+db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username) WHERE username IS NOT NULL;`);
+
+(function ensureDefaultAdmin() {
+  const bcrypt = require('bcryptjs');
+  const existing = db.prepare("SELECT id, username, password FROM users WHERE username='admin'").get();
+  const hashed = bcrypt.hashSync('123456', 10);
+  if (existing) {
+    if (!existing.password) {
+      db.prepare("UPDATE users SET password=? WHERE id=?").run(hashed, existing.id);
+    }
+    return;
+  }
+  const seeded = db.prepare("SELECT id FROM users WHERE role='admin' AND phone='13800000000'").get();
+  if (seeded) {
+    db.prepare("UPDATE users SET username='admin', password=? WHERE id=?").run(hashed, seeded.id);
+    console.log('已为默认管理员设置 username=admin, password=123456');
+  }
+})();
 
 module.exports = db;

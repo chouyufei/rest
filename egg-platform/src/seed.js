@@ -1,4 +1,5 @@
 const db = require('./db');
+const bcrypt = require('bcryptjs');
 
 function seed() {
   const count = db.prepare('SELECT COUNT(*) c FROM users').get().c;
@@ -7,9 +8,10 @@ function seed() {
     return;
   }
   const now = Date.now();
+  const adminHash = bcrypt.hashSync('123456', 10);
 
-  db.prepare(`INSERT INTO users (phone, role, name, license_status, created_at) VALUES (?, 'admin', ?, 'none', ?)`)
-    .run('13800000000', '平台管理员', now);
+  db.prepare(`INSERT INTO users (phone, username, password, role, name, license_status, created_at) VALUES (?, 'admin', ?, 'admin', ?, 'none', ?)`)
+    .run('13800000000', adminHash, '平台管理员', now);
   const farm1 = db.prepare(`INSERT INTO users (phone, role, name, region, license_status, created_at) VALUES (?, 'farm', ?, ?, 'approved', ?)`)
     .run('13800000001', '阳光散养鸡场', '山东青州', now);
   const farm2 = db.prepare(`INSERT INTO users (phone, role, name, region, license_status, created_at) VALUES (?, 'farm', ?, ?, 'approved', ?)`)
@@ -72,7 +74,7 @@ function seed() {
     88, 2, 88, now, now + 2 * 60 * 60 * 1000, 'auctioning', now, 'demand', '元/箱');
 
   console.log('Seed 完成。账号（验证码统一 123456）：');
-  console.log('  管理员: 13800000000');
+  console.log('  管理员（Web 后台）: 账号 admin / 密码 123456');
   console.log('  养殖场: 13800000001、13800000002（已认证+已缴 1000 保证金）');
   console.log('  养殖场: 13800000003（资质待审核）');
   console.log('  采购商: 13900000001、13900000002、13900000003（已缴 200 保证金）');
