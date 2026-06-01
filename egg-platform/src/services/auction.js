@@ -90,7 +90,7 @@ function triggerAutoBids(resourceId, latestBidderId) {
   }
 }
 
-function closeAuction(resourceId) {
+function closeAuction(resourceId, force = false) {
   const r = getResource(resourceId);
   if (!r || r.status !== 'auctioning') return;
   const now = Date.now();
@@ -99,11 +99,14 @@ function closeAuction(resourceId) {
   //  - 有出价：最后一次出价后静默满 5 分钟即成交（不必等到计划结束时间）；
   //    只要有人在 5 分钟内继续出价就一直顺延（无限防狙击）。
   //  - 无出价：到计划结束时间即流拍。
-  if (r.current_bidder_id) {
-    const lastBid = r.last_bid_at || r.start_at;
-    if (now - lastBid < ANTI_SNIPE_WINDOW_MS) return;
-  } else {
-    if (now < r.end_at) return;
+  //  - force=true：发布方手动结束竞拍，跳过静默检查直接按当前最高价成交。
+  if (!force) {
+    if (r.current_bidder_id) {
+      const lastBid = r.last_bid_at || r.start_at;
+      if (now - lastBid < ANTI_SNIPE_WINDOW_MS) return;
+    } else {
+      if (now < r.end_at) return;
+    }
   }
 
   const isSupply = (r.kind || 'supply') === 'supply';

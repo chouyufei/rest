@@ -142,4 +142,15 @@ router.post('/:id/cancel', authRequired, (req, res) => {
   res.json({ ok: true });
 });
 
+router.post('/:id/end-now', authRequired, (req, res) => {
+  const r = db.prepare('SELECT * FROM resources WHERE id=?').get(req.params.id);
+  if (!r) return res.status(404).json({ error: '资源不存在' });
+  if (r.farm_id !== req.user.id) return res.status(403).json({ error: '只能操作自己发布的资源' });
+  if (r.status !== 'auctioning') return res.status(400).json({ error: '竞拍未进行中' });
+  if (!r.current_bidder_id) return res.status(400).json({ error: '还没有人出价，无法成交' });
+  closeAuction(r.id, true);
+  const updated = db.prepare('SELECT * FROM resources WHERE id=?').get(r.id);
+  res.json({ ok: true, resource: updated });
+});
+
 module.exports = router;
