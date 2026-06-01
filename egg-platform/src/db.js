@@ -187,6 +187,10 @@ addColumnIfMissing('users', 'quarantine_photos', 'quarantine_photos TEXT');
 addColumnIfMissing('users', 'wechat_openid', 'wechat_openid TEXT');
 addColumnIfMissing('users', 'username', 'username TEXT');
 
+addColumnIfMissing('resources', 'last_bid_at', 'last_bid_at INTEGER');
+addColumnIfMissing('deposits', 'resource_id', 'resource_id INTEGER');
+addColumnIfMissing('pay_orders', 'resource_id', 'resource_id INTEGER');
+
 db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username) WHERE username IS NOT NULL;`);
 
 (function ensureDefaultAdmin() {

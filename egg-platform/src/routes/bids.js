@@ -28,8 +28,8 @@ router.post('/auto', authRequired, roleRequired('buyer'), (req, res) => {
   if (!r) return res.status(404).json({ error: '资源不存在' });
   if (r.status !== 'auctioning') return res.status(400).json({ error: '竞拍未进行中' });
   if ((r.kind || 'supply') !== 'supply') return res.status(400).json({ error: '求购暂不支持自动出价' });
-  const buyerDep = db.prepare(`SELECT * FROM deposits WHERE user_id=? AND type='buyer_bid' AND status IN ('available','frozen')`).get(req.user.id);
-  if (!buyerDep) return res.status(403).json({ error: '请先缴纳 200 元竞拍保证金' });
+  const buyerDep = db.prepare(`SELECT * FROM deposits WHERE user_id=? AND type='buyer_bid' AND resource_id=? AND status IN ('available','frozen')`).get(req.user.id, resource_id);
+  if (!buyerDep) return res.status(403).json({ error: '请先为该竞拍缴纳保证金' });
 
   db.prepare(`
     INSERT INTO auto_bids (resource_id, bidder_id, max_price, active, created_at)

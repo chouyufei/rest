@@ -79,8 +79,7 @@ router.post('/', authRequired, (req, res) => {
     if (!farmDep) return res.status(403).json({ error: `请先缴纳 ${FARM_DEPOSIT_AMOUNT} 元品质保证金` });
   } else {
     if (req.user.role !== 'buyer') return res.status(403).json({ error: '求购仅限采购商发布' });
-    const buyerDep = db.prepare(`SELECT * FROM deposits WHERE user_id=? AND type='buyer_bid' AND status IN ('available','frozen')`).get(req.user.id);
-    if (!buyerDep) return res.status(403).json({ error: '请先缴纳 200 元采购保证金' });
+    // 求购发布免保证金；应标的养殖场按场缴纳竞拍保证金
   }
 
   const {

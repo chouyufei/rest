@@ -55,28 +55,30 @@ router.get('/mode', (req, res) => {
 
 router.post('/create-order', authRequired, async (req, res) => {
   const { type } = req.body;
+  const resourceId = req.body.resource_id ? Number(req.body.resource_id) : null;
   if (!['farm_quality', 'buyer_bid'].includes(type)) {
     return res.status(400).json({ error: '保证金类型错误' });
   }
   if (type === 'farm_quality' && req.user.role !== 'farm') return res.status(403).json({ error: '仅养殖场需缴纳品质保证金' });
-  if (type === 'buyer_bid' && req.user.role !== 'buyer') return res.status(403).json({ error: '仅采购商需缴纳竞拍保证金' });
   if (type === 'farm_quality' && req.user.license_status !== 'approved') {
     return res.status(403).json({ error: '请先完成资质审核' });
   }
+  if (type === 'buyer_bid' && !resourceId) return res.status(400).json({ error: '竞拍保证金需指定货源' });
 
-  const existing = db.prepare(`
-    SELECT * FROM deposits WHERE user_id=? AND type=? AND status IN ('available','frozen')
-  `).get(req.user.id, type);
+  const existing = type === 'farm_quality'
+    ? db.prepare(`SELECT * FROM deposits WHERE user_id=? AND type='farm_quality' AND status IN ('available','frozen')`).get(req.user.id)
+    : db.prepare(`SELECT * FROM deposits WHERE user_id=? AND type='buyer_bid' AND resource_id=? AND status IN ('available','frozen')`).get(req.user.id, resourceId);
   if (existing) return res.json({ ok: true, paid: true, message: '已缴纳保证金' });
 
   const amount = type === 'farm_quality' ? FARM_DEPOSIT : BUYER_DEPOSIT;
 
   if (!isLive) {
     const orderNo = 'DEMO' + Date.now() + Math.floor(Math.random() * 1000);
+    const status = type === 'buyer_bid' ? 'frozen' : 'available';
     const info = db.prepare(`
-      INSERT INTO deposits (user_id, type, amount, status, note, paid_at)
-      VALUES (?, ?, ?, 'available', ?, ?)
-    `).run(req.user.id, type, amount, `演示订单 ${orderNo}`, Date.now());
+      INSERT INTO deposits (user_id, type, amount, status, resource_id, note, paid_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(req.user.id, type, amount, status, resourceId, `演示订单 ${orderNo}`, Date.now());
     const dep = db.prepare('SELECT * FROM deposits WHERE id=?').get(info.lastInsertRowid);
     return res.json({ ok: true, demo: true, deposit: dep, message: `[演示] 已缴纳 ${amount} 元保证金` });
   }
@@ -89,9 +91,9 @@ router.post('/create-order', authRequired, async (req, res) => {
   const totalFen = Math.round(amount * 100);
 
   db.prepare(`
-    INSERT INTO pay_orders (out_trade_no, user_id, deposit_type, amount, status, created_at)
-    VALUES (?, ?, ?, ?, 'pending', ?)
-  `).run(outTradeNo, req.user.id, type, amount, Date.now());
+    INSERT INTO pay_orders (out_trade_no, user_id, deposit_type, amount, status, resource_id, created_at)
+    VALUES (?, ?, ?, ?, 'pending', ?, ?)
+  `).run(outTradeNo, req.user.id, type, amount, resourceId, Date.now());
 
   try {
     const result = await pay.transactions_jsapi({
@@ -212,13 +214,15 @@ function fulfillOrder(order, transactionId) {
   const tx = db.transaction(() => {
     db.prepare(`UPDATE pay_orders SET status='paid', transaction_id=?, paid_at=? WHERE id=? AND status='pending'`)
       .run(transactionId, now, order.id);
-    const exists = db.prepare(`SELECT id FROM deposits WHERE user_id=? AND type=? AND status IN ('available','frozen')`)
-      .get(order.user_id, order.deposit_type);
+    const exists = order.deposit_type === 'farm_quality'
+      ? db.prepare(`SELECT id FROM deposits WHERE user_id=? AND type='farm_quality' AND status IN ('available','frozen')`).get(order.user_id)
+      : db.prepare(`SELECT id FROM deposits WHERE user_id=? AND type='buyer_bid' AND resource_id=? AND status IN ('available','frozen')`).get(order.user_id, order.resource_id);
     if (!exists) {
+      const status = order.deposit_type === 'buyer_bid' ? 'frozen' : 'available';
       db.prepare(`
-        INSERT INTO deposits (user_id, type, amount, status, note, paid_at)
-        VALUES (?, ?, ?, 'available', ?, ?)
-      `).run(order.user_id, order.deposit_type, order.amount, `微信支付 ${transactionId}`, now);
+        INSERT INTO deposits (user_id, type, amount, status, resource_id, note, paid_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(order.user_id, order.deposit_type, order.amount, status, order.resource_id, `微信支付 ${transactionId}`, now);
     }
   });
   tx();
