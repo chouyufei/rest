@@ -1,5 +1,11 @@
 const db = require('../db');
-const { notify } = require('./notification');
+const {
+  notify,
+  notifyAuctionWon,
+  notifyAuctionLost,
+  notifyOrderReceived,
+  notifyAuctionFailedToPublisher,
+} = require('./notification');
 
 const ANTI_SNIPE_WINDOW_MS = 5 * 60 * 1000; // 最后一次出价后静默此时长即成交
 const FARM_DEPOSIT_AMOUNT = Number(process.env.FARM_DEPOSIT_AMOUNT) || 0.1;
@@ -120,19 +126,23 @@ function closeAuction(resourceId, force = false) {
       VALUES (?, ?, ?, ?, ?, 'pending_group', ?)
     `).run(r.id, farmId, buyerId, r.current_price, r.quantity, now);
 
-    notify(r.farm_id, 'auction_won', '竞拍成交',
-      `「${r.title}」以 ${r.current_price} 元成交，请在群中沟通发货${isSupply ? '' : '（您是采购方）'}` + ' [SMS: 已发送短信提醒]', r.id);
-    notify(r.current_bidder_id, 'auction_won', isSupply ? '竞拍成功' : '应标成功',
-      `恭喜！您以 ${r.current_price} 元${isSupply ? '拍下' : '中标'}「${r.title}」 [SMS: 已发送短信提醒]`, r.id);
+    // 站内 + 短信 + 微信订阅消息 三通道
+    notifyOrderReceived(r.farm_id, r, r.current_price, isSupply);          // 发布方：单已被拍下
+    notifyAuctionWon(r.current_bidder_id, r, r.current_price);             // 中标方：竞拍成功
 
-    // 未中标者的该资源保证金 → 释放退还；中标者保留至订单完成
+    // 未中标的其他出价者：发"未中标"通知 + 释放保证金
+    const losers = db.prepare(`
+      SELECT DISTINCT bidder_id FROM bids WHERE resource_id=? AND bidder_id != ?
+    `).all(r.id, r.current_bidder_id);
+    for (const l of losers) notifyAuctionLost(l.bidder_id, r, r.current_price);
+
     db.prepare(`
       UPDATE deposits SET status='available', released_at=?
       WHERE type='buyer_bid' AND resource_id=? AND user_id != ? AND status IN ('available','frozen')
     `).run(now, r.id, r.current_bidder_id);
   } else {
     db.prepare(`UPDATE resources SET status='failed' WHERE id=?`).run(r.id);
-    notify(r.farm_id, 'auction_failed', '流拍', `「${r.title}」无人${isSupply ? '出价' : '应标'}，已流拍`, r.id);
+    notifyAuctionFailedToPublisher(r.farm_id, r, isSupply);                // 发布方：流拍
     db.prepare(`
       UPDATE deposits SET status='available', released_at=?
       WHERE type='buyer_bid' AND resource_id=? AND status IN ('available','frozen')

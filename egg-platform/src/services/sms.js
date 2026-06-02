@@ -3,13 +3,31 @@ const otpStore = require('./otp');
 const PROVIDER = process.env.SMS_PROVIDER || '';
 const SIGN_NAME = process.env.SMS_SIGN_NAME || '';
 const TEMPLATE_CODE = process.env.SMS_TEMPLATE_CODE || '';
+const NOTICE_TEMPLATE_CODE = process.env.SMS_NOTICE_TEMPLATE_CODE || '';
 const ACCESS_KEY_ID = process.env.SMS_ACCESS_KEY_ID || '';
 const ACCESS_KEY_SECRET = process.env.SMS_ACCESS_KEY_SECRET || '';
 
 const isLive = !!(PROVIDER && SIGN_NAME && TEMPLATE_CODE && ACCESS_KEY_ID && ACCESS_KEY_SECRET);
+const noticeLive = !!(isLive && NOTICE_TEMPLATE_CODE);
 
 function genCode() {
   return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+// 通知类短信（非验证码），params 形如 { resource: '红壳土鸡蛋', price: '92' }，按模板字段填充
+async function sendNotice(phone, params) {
+  if (!noticeLive) {
+    console.log(`[SMS-Notice·demo] → ${phone}`, params);
+    return { ok: true, demo: true };
+  }
+  try {
+    if (PROVIDER === 'aliyun') await sendViaAliyun(phone, params, NOTICE_TEMPLATE_CODE);
+    else if (PROVIDER === 'tencent') await sendViaTencent(phone, params, NOTICE_TEMPLATE_CODE);
+    return { ok: true };
+  } catch (e) {
+    console.warn('SMS notice failed:', e.message);
+    return { ok: false, err: e.message };
+  }
 }
 
 async function send(phone) {
@@ -21,8 +39,8 @@ async function send(phone) {
 
   const code = genCode();
   try {
-    if (PROVIDER === 'aliyun') await sendViaAliyun(phone, code);
-    else if (PROVIDER === 'tencent') await sendViaTencent(phone, code);
+    if (PROVIDER === 'aliyun') await sendViaAliyun(phone, { code }, TEMPLATE_CODE);
+    else if (PROVIDER === 'tencent') await sendViaTencent(phone, { code }, TEMPLATE_CODE);
     else throw new Error('不支持的 SMS_PROVIDER: ' + PROVIDER);
     otpStore.set(phone, code);
     return { ok: true };
@@ -32,7 +50,7 @@ async function send(phone) {
   }
 }
 
-async function sendViaAliyun(phone, code) {
+async function sendViaAliyun(phone, params, templateCode) {
   let Dysmsapi, OpenApi, Util;
   try {
     Dysmsapi = require('@alicloud/dysmsapi20170525');
@@ -50,15 +68,15 @@ async function sendViaAliyun(phone, code) {
   const req = new Dysmsapi.SendSmsRequest({
     phoneNumbers: phone,
     signName: SIGN_NAME,
-    templateCode: TEMPLATE_CODE,
-    templateParam: JSON.stringify({ code }),
+    templateCode,
+    templateParam: JSON.stringify(params),
   });
   const runtime = new Util.RuntimeOptions({});
   const res = await client.sendSmsWithOptions(req, runtime);
   if (res.body.code !== 'OK') throw new Error(res.body.message || 'aliyun: ' + res.body.code);
 }
 
-async function sendViaTencent(phone, code) {
+async function sendViaTencent(phone, params, templateCode) {
   let tencentcloud;
   try { tencentcloud = require('tencentcloud-sdk-nodejs'); }
   catch (e) { throw new Error('请先安装腾讯云 SMS SDK: npm i tencentcloud-sdk-nodejs'); }
@@ -67,15 +85,16 @@ async function sendViaTencent(phone, code) {
     credential: { secretId: ACCESS_KEY_ID, secretKey: ACCESS_KEY_SECRET },
     region: 'ap-guangzhou',
   });
+  const paramSet = Array.isArray(params) ? params : Object.values(params).map(v => String(v));
   const res = await client.SendSms({
     SmsSdkAppId: process.env.SMS_APP_ID,
     SignName: SIGN_NAME,
-    TemplateId: TEMPLATE_CODE,
-    TemplateParamSet: [code],
+    TemplateId: templateCode,
+    TemplateParamSet: paramSet,
     PhoneNumberSet: ['+86' + phone],
   });
   const r = res.SendStatusSet && res.SendStatusSet[0];
   if (!r || r.Code !== 'Ok') throw new Error((r && r.Message) || 'tencent send failed');
 }
 
-module.exports = { send, isLive, provider: PROVIDER };
+module.exports = { send, sendNotice, isLive, noticeLive, provider: PROVIDER };

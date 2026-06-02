@@ -40,6 +40,15 @@ router.get('/login-modes', (req, res) => {
   });
 });
 
+// 暴露微信订阅消息模板 ID 给小程序，前端用它调用 wx.requestSubscribeMessage
+router.get('/notice-templates', (req, res) => {
+  const wechatNotify = require('../services/wechat-notify');
+  res.json({
+    sms: { notice_live: sms.noticeLive },
+    wechat: { templates: wechatNotify.templatesPublic(), live: wechatNotify.isLive },
+  });
+});
+
 router.post('/send-otp', async (req, res) => {
   const { phone } = req.body;
   if (!phone || !/^1\d{10}$/.test(phone)) return res.status(400).json({ error: '手机号格式错误' });
