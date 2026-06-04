@@ -19,11 +19,11 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage,
-  limits: { fileSize: 10 * 1024 * 1024 },
+  limits: { fileSize: 60 * 1024 * 1024 },  // 60MB，支持短视频介绍
   fileFilter: (req, file, cb) => {
-    const ok = /\.(jpe?g|png|gif|webp|heic|bmp)$/i.test(file.originalname || '') ||
-               /^image\//.test(file.mimetype || '');
-    cb(ok ? null : new Error('仅支持图片'), ok);
+    const ok = /\.(jpe?g|png|gif|webp|heic|bmp|mp4|mov|m4v|webm)$/i.test(file.originalname || '') ||
+               /^image\/|^video\//.test(file.mimetype || '');
+    cb(ok ? null : new Error('仅支持图片或视频'), ok);
   },
 });
 

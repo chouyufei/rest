@@ -35,8 +35,8 @@ function seed() {
     INSERT INTO resources (
       farm_id, title, region, province, chicken_breed, farm_size, egg_color, weight_spec, shell_quality,
       freshness_days, quantity, photos, description, start_price, min_increment, current_price,
-      start_at, end_at, status, created_at, kind, unit_label, review_status
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved')
+      start_at, end_at, status, created_at, kind, unit_label, unit_size, review_status
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '箱', 'approved')
   `);
 
   // === 货源（养殖场发布，单位 元/箱，1 箱通常 360 枚） ===

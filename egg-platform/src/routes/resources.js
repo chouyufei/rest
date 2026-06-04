@@ -85,7 +85,7 @@ router.post('/', authRequired, (req, res) => {
   const {
     title, region, province, chicken_breed, farm_size, egg_color, weight_spec, shell_quality,
     freshness_days, quantity, photos, description, start_price, min_increment,
-    duration_hours, unit_label,
+    duration_hours, unit_label, unit_size, intro_video,
   } = req.body;
 
   if (!title || !start_price || !quantity || !duration_hours) {
@@ -105,13 +105,14 @@ router.post('/', authRequired, (req, res) => {
     INSERT INTO resources (
       farm_id, title, region, province, chicken_breed, farm_size, egg_color, weight_spec, shell_quality,
       freshness_days, quantity, photos, description, start_price, min_increment, current_price,
-      start_at, end_at, status, created_at, kind, unit_label, review_status
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved')
+      start_at, end_at, status, created_at, kind, unit_label, unit_size, intro_video, review_status
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved')
   `).run(
     req.user.id, title, region || req.user.region, province || null,
     chicken_breed, farm_size, egg_color, weight_spec, shell_quality,
     freshness_days, quantity, JSON.stringify(photos || []), description, startPrice, inc, startPrice,
     now, endAt, initialStatus, now, kind, unit_label || '元/箱',
+    unit_size || '车', intro_video || null,
   );
 
   const r = db.prepare('SELECT * FROM resources WHERE id=?').get(info.lastInsertRowid);

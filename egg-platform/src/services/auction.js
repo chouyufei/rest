@@ -164,7 +164,8 @@ function sweep() {
   `).all(now, silenceCutoff);
   for (const row of expired) closeAuction(row.id);
 
-  const now7d = now - 7 * 24 * 60 * 60 * 1000;
+  const AUTO_CONFIRM_DAYS = Number(process.env.AUTO_CONFIRM_DAYS) || 3;
+  const now7d = now - AUTO_CONFIRM_DAYS * 24 * 60 * 60 * 1000;
   const autoOrders = db.prepare(`
     SELECT * FROM orders
     WHERE status='communicating' AND group_created_at IS NOT NULL AND group_created_at <= ? AND confirmed_at IS NULL
