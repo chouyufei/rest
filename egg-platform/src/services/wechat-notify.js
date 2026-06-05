@@ -1,16 +1,12 @@
-// 微信订阅消息（一次性）：subscribeMessage.send
-// 需要用户在小程序里通过 wx.requestSubscribeMessage 主动授权一次模板，后端才能下发。
+// 微信订阅消息（单模板·按规范）
+// 模板含字段：thing1.DATA（货源标题）/ short_thing2.DATA（结果文案，≤15 字）/ thing4.DATA（固定提示）
 
 const APP_ID = process.env.WECHAT_APP_ID || '';
 const APP_SECRET = process.env.WECHAT_APP_SECRET || '';
+const TEMPLATE_ID = process.env.WECHAT_TPL_AUCTION || 'O8k9dw5eVZafa1ZqaZtyb0R_MCfoBOBTmlJNuq7juA4';
+const FIXED_TIP = '请进入小程序查看详情，后续平台方会添加相关人员建微信群沟通';
 
-const TEMPLATES = {
-  auction_won:     process.env.WECHAT_TPL_AUCTION_WON || '',
-  auction_lost:    process.env.WECHAT_TPL_AUCTION_LOST || '',
-  order_received:  process.env.WECHAT_TPL_ORDER_RECEIVED || '',
-};
-
-const isLive = !!(APP_ID && APP_SECRET);
+const isLive = !!(APP_ID && APP_SECRET && TEMPLATE_ID);
 
 let _accessToken = null;
 let _accessTokenExpiresAt = 0;
@@ -26,11 +22,18 @@ async function getAccessToken() {
   return _accessToken;
 }
 
-// 下发订阅消息。data 形如 { thing1: { value: 'xxx' }, amount2: { value: '100元' }, ... }
-async function send(openid, templateKey, data, page) {
-  const templateId = TEMPLATES[templateKey];
-  if (!isLive || !templateId || !openid) {
-    console.log(`[微信订阅消息·demo] openid=${openid} template=${templateKey} data=`, data);
+// 结果文案映射（≤15 字）
+const RESULT_TEXTS = {
+  buyer_won:  '货源竞拍成功',
+  buyer_lost: '货源竞拍失败',
+  seller:     '您的货源已被成功竞拍',
+};
+
+// scenario: 'buyer_won' | 'buyer_lost' | 'seller'
+async function send(openid, scenario, resourceTitle, page) {
+  const resultText = RESULT_TEXTS[scenario] || scenario;
+  if (!isLive || !openid) {
+    console.log(`[微信订阅消息·demo] openid=${openid} scenario=${scenario} title="${resourceTitle}" → "${resultText}"`);
     return { demo: true };
   }
   try {
@@ -38,8 +41,12 @@ async function send(openid, templateKey, data, page) {
     const url = `https://api.weixin.qq.com/cgi-bin/message/subscribe/send?access_token=${token}`;
     const body = {
       touser: openid,
-      template_id: templateId,
-      data,
+      template_id: TEMPLATE_ID,
+      data: {
+        thing1:        { value: String(resourceTitle || '').slice(0, 20) },
+        short_thing2:  { value: resultText },
+        thing4:        { value: FIXED_TIP },
+      },
       miniprogram_state: process.env.NODE_ENV === 'production' ? 'formal' : 'trial',
       lang: 'zh_CN',
     };
@@ -47,7 +54,7 @@ async function send(openid, templateKey, data, page) {
     const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const r = await res.json();
     if (r.errcode && r.errcode !== 0) {
-      console.warn('微信订阅消息下发失败:', r.errcode, r.errmsg, 'template=' + templateKey);
+      console.warn('微信订阅消息下发失败:', r.errcode, r.errmsg);
       return { ok: false, err: r };
     }
     return { ok: true };
@@ -58,12 +65,7 @@ async function send(openid, templateKey, data, page) {
 }
 
 function templatesPublic() {
-  // 提供给小程序前端用于 wx.requestSubscribeMessage 的模板 ID（只暴露公开值）
-  return {
-    auction_won: TEMPLATES.auction_won || null,
-    auction_lost: TEMPLATES.auction_lost || null,
-    order_received: TEMPLATES.order_received || null,
-  };
+  return { auction: TEMPLATE_ID || null };
 }
 
 module.exports = { send, templatesPublic, isLive };

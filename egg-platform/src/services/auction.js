@@ -5,6 +5,7 @@ const {
   notifyAuctionLost,
   notifyOrderReceived,
   notifyAuctionFailedToPublisher,
+  notifyPlatformOnDeal,
 } = require('./notification');
 
 const ANTI_SNIPE_WINDOW_MS = 5 * 60 * 1000; // 最后一次出价后静默此时长即成交
@@ -129,6 +130,7 @@ function closeAuction(resourceId, force = false) {
     // 站内 + 短信 + 微信订阅消息 三通道
     notifyOrderReceived(r.farm_id, r, r.current_price, isSupply);          // 发布方：单已被拍下
     notifyAuctionWon(r.current_bidder_id, r, r.current_price);             // 中标方：竞拍成功
+    notifyPlatformOnDeal(r, farmId, buyerId, r.current_price);             // 平台方：企业微信 + 短信
 
     // 未中标的其他出价者：发"未中标"通知 + 释放保证金
     const losers = db.prepare(`

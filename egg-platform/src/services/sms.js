@@ -3,29 +3,54 @@ const otpStore = require('./otp');
 const PROVIDER = process.env.SMS_PROVIDER || '';
 const SIGN_NAME = process.env.SMS_SIGN_NAME || '';
 const TEMPLATE_CODE = process.env.SMS_TEMPLATE_CODE || '';
-const NOTICE_TEMPLATE_CODE = process.env.SMS_NOTICE_TEMPLATE_CODE || '';
+// 通知模板：买卖方（2657517）/ 平台方（2657523）
+const NOTICE_USER_TEMPLATE = process.env.SMS_NOTICE_USER_TEMPLATE || '2657517';
+const NOTICE_PLATFORM_TEMPLATE = process.env.SMS_NOTICE_PLATFORM_TEMPLATE || '2657523';
 const ACCESS_KEY_ID = process.env.SMS_ACCESS_KEY_ID || '';
 const ACCESS_KEY_SECRET = process.env.SMS_ACCESS_KEY_SECRET || '';
 
 const isLive = !!(PROVIDER && SIGN_NAME && TEMPLATE_CODE && ACCESS_KEY_ID && ACCESS_KEY_SECRET);
-const noticeLive = !!(isLive && NOTICE_TEMPLATE_CODE);
+const noticeLive = isLive;
 
 function genCode() {
   return String(Math.floor(100000 + Math.random() * 900000));
 }
 
-// 通知类短信（非验证码），params 形如 { resource: '红壳土鸡蛋', price: '92' }，按模板字段填充
-async function sendNotice(phone, params) {
+// 通知给买卖方：[货源标题, 结果文案]
+// 模板 2657517 假设格式：「【凤伯乐】{1}：{2}」 — 实际看模板申请时的字段顺序
+async function sendUserNotice(phone, resourceTitle, resultText) {
+  const params = [String(resourceTitle || '').slice(0, 20), String(resultText || '')];
   if (!noticeLive) {
-    console.log(`[SMS-Notice·demo] → ${phone}`, params);
+    console.log(`[SMS-用户·demo] → ${phone} 模板=${NOTICE_USER_TEMPLATE} 参数=`, params);
     return { ok: true, demo: true };
   }
   try {
-    if (PROVIDER === 'aliyun') await sendViaAliyun(phone, params, NOTICE_TEMPLATE_CODE);
-    else if (PROVIDER === 'tencent') await sendViaTencent(phone, params, NOTICE_TEMPLATE_CODE);
+    if (PROVIDER === 'tencent') await sendViaTencent(phone, params, NOTICE_USER_TEMPLATE);
+    else if (PROVIDER === 'aliyun') await sendViaAliyun(phone, { name: params[0], result: params[1] }, NOTICE_USER_TEMPLATE);
     return { ok: true };
   } catch (e) {
-    console.warn('SMS notice failed:', e.message);
+    console.warn('SMS user notice failed:', e.message);
+    return { ok: false, err: e.message };
+  }
+}
+
+// 通知给平台方：[货源标题, 卖方信息, 买方信息]
+async function sendPlatformNotice(phone, resourceTitle, sellerInfo, buyerInfo) {
+  const params = [
+    String(resourceTitle || '').slice(0, 20),
+    String(sellerInfo || ''),
+    String(buyerInfo || ''),
+  ];
+  if (!noticeLive) {
+    console.log(`[SMS-平台·demo] → ${phone} 模板=${NOTICE_PLATFORM_TEMPLATE} 参数=`, params);
+    return { ok: true, demo: true };
+  }
+  try {
+    if (PROVIDER === 'tencent') await sendViaTencent(phone, params, NOTICE_PLATFORM_TEMPLATE);
+    else if (PROVIDER === 'aliyun') await sendViaAliyun(phone, { name: params[0], seller: params[1], buyer: params[2] }, NOTICE_PLATFORM_TEMPLATE);
+    return { ok: true };
+  } catch (e) {
+    console.warn('SMS platform notice failed:', e.message);
     return { ok: false, err: e.message };
   }
 }
@@ -97,4 +122,4 @@ async function sendViaTencent(phone, params, templateCode) {
   if (!r || r.Code !== 'Ok') throw new Error((r && r.Message) || 'tencent send failed');
 }
 
-module.exports = { send, sendNotice, isLive, noticeLive, provider: PROVIDER };
+module.exports = { send, sendUserNotice, sendPlatformNotice, isLive, noticeLive, provider: PROVIDER };

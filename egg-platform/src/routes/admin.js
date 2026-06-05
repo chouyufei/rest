@@ -179,4 +179,27 @@ router.post('/disputes/:id/resolve', (req, res) => {
   res.json({ ok: true });
 });
 
+// ===== 通知设置 =====
+const settings = require('../services/settings');
+
+router.get('/notice-settings', (req, res) => {
+  res.json({ settings: settings.getAll() });
+});
+
+router.put('/notice-settings', (req, res) => {
+  const { notify_seller_sms, notify_buyer_sms, notify_platform_sms, platform_phones, wecom_webhook_url } = req.body;
+  if (notify_seller_sms !== undefined) settings.set('notify_seller_sms', !!notify_seller_sms);
+  if (notify_buyer_sms !== undefined) settings.set('notify_buyer_sms', !!notify_buyer_sms);
+  if (notify_platform_sms !== undefined) settings.set('notify_platform_sms', !!notify_platform_sms);
+  if (platform_phones !== undefined) {
+    const list = Array.isArray(platform_phones) ? platform_phones : [];
+    const cleaned = list.map(p => String(p).trim()).filter(p => /^1\d{10}$/.test(p));
+    settings.set('platform_phones', cleaned);
+  }
+  if (wecom_webhook_url !== undefined) {
+    settings.set('wecom_webhook_url', String(wecom_webhook_url || '').trim());
+  }
+  res.json({ ok: true, settings: settings.getAll() });
+});
+
 module.exports = router;
