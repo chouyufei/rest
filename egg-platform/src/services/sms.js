@@ -16,17 +16,15 @@ function genCode() {
   return String(Math.floor(100000 + Math.random() * 900000));
 }
 
-// 通知给买卖方：[货源标题, 结果文案]
-// 模板 2657517 假设格式：「【凤伯乐】{1}：{2}」 — 实际看模板申请时的字段顺序
+// 通知给买卖方：模板正文固定，无需参数
 async function sendUserNotice(phone, resourceTitle, resultText) {
-  const params = [String(resourceTitle || '').slice(0, 20), String(resultText || '')];
   if (!noticeLive) {
-    console.log(`[SMS-用户·demo] → ${phone} 模板=${NOTICE_USER_TEMPLATE} 参数=`, params);
+    console.log(`[SMS-用户·demo] → ${phone} 模板=${NOTICE_USER_TEMPLATE} 上下文="${resourceTitle}/${resultText}"`);
     return { ok: true, demo: true };
   }
   try {
-    if (PROVIDER === 'tencent') await sendViaTencent(phone, params, NOTICE_USER_TEMPLATE);
-    else if (PROVIDER === 'aliyun') await sendViaAliyun(phone, { name: params[0], result: params[1] }, NOTICE_USER_TEMPLATE);
+    if (PROVIDER === 'tencent') await sendViaTencent(phone, [], NOTICE_USER_TEMPLATE);
+    else if (PROVIDER === 'aliyun') await sendViaAliyun(phone, {}, NOTICE_USER_TEMPLATE);
     return { ok: true };
   } catch (e) {
     console.warn('SMS user notice failed:', e.message);
@@ -34,20 +32,15 @@ async function sendUserNotice(phone, resourceTitle, resultText) {
   }
 }
 
-// 通知给平台方：[货源标题, 卖方信息, 买方信息]
+// 通知给平台方：模板正文固定，无需参数
 async function sendPlatformNotice(phone, resourceTitle, sellerInfo, buyerInfo) {
-  const params = [
-    String(resourceTitle || '').slice(0, 20),
-    String(sellerInfo || ''),
-    String(buyerInfo || ''),
-  ];
   if (!noticeLive) {
-    console.log(`[SMS-平台·demo] → ${phone} 模板=${NOTICE_PLATFORM_TEMPLATE} 参数=`, params);
+    console.log(`[SMS-平台·demo] → ${phone} 模板=${NOTICE_PLATFORM_TEMPLATE} 上下文="${resourceTitle}"`);
     return { ok: true, demo: true };
   }
   try {
-    if (PROVIDER === 'tencent') await sendViaTencent(phone, params, NOTICE_PLATFORM_TEMPLATE);
-    else if (PROVIDER === 'aliyun') await sendViaAliyun(phone, { name: params[0], seller: params[1], buyer: params[2] }, NOTICE_PLATFORM_TEMPLATE);
+    if (PROVIDER === 'tencent') await sendViaTencent(phone, [], NOTICE_PLATFORM_TEMPLATE);
+    else if (PROVIDER === 'aliyun') await sendViaAliyun(phone, {}, NOTICE_PLATFORM_TEMPLATE);
     return { ok: true };
   } catch (e) {
     console.warn('SMS platform notice failed:', e.message);
