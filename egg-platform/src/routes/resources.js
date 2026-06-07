@@ -49,6 +49,52 @@ router.get('/mine', authRequired, (req, res) => {
   res.json({ resources: rows.map(enrich) });
 });
 
+// 卖家信用 / 宝贝记录
+router.get('/seller/:userId', (req, res) => {
+  const u = db.prepare(`
+    SELECT id, name, role, region, avatar, contact_name, daily_output, main_products,
+           farm_size_int, license_status, created_at
+    FROM users WHERE id=?
+  `).get(req.params.userId);
+  if (!u) return res.status(404).json({ error: '卖家不存在' });
+  if (u.role !== 'farm') return res.status(400).json({ error: '该用户不是养殖场' });
+
+  const stats = db.prepare(`
+    SELECT
+      SUM(CASE WHEN status='sold' THEN 1 ELSE 0 END) AS sold_cnt,
+      SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed_cnt,
+      SUM(CASE WHEN status='auctioning' THEN 1 ELSE 0 END) AS active_cnt,
+      COUNT(*) AS total_cnt
+    FROM resources WHERE farm_id=? AND kind='supply'
+  `).get(u.id);
+
+  const total = (stats.sold_cnt || 0) + (stats.failed_cnt || 0);
+  const successRate = total > 0 ? Math.round((stats.sold_cnt || 0) * 100 / total) : null;
+
+  const active = db.prepare(`
+    SELECT * FROM resources WHERE farm_id=? AND kind='supply' AND status='auctioning'
+    ORDER BY created_at DESC LIMIT 10
+  `).all(u.id).map(enrich);
+
+  const sold = db.prepare(`
+    SELECT * FROM resources WHERE farm_id=? AND kind='supply' AND status='sold'
+    ORDER BY created_at DESC LIMIT 10
+  `).all(u.id).map(enrich);
+
+  res.json({
+    seller: u,
+    stats: {
+      sold_cnt: stats.sold_cnt || 0,
+      failed_cnt: stats.failed_cnt || 0,
+      active_cnt: stats.active_cnt || 0,
+      total_cnt: stats.total_cnt || 0,
+      success_rate: successRate,
+    },
+    active,
+    sold,
+  });
+});
+
 router.get('/:id', (req, res) => {
   sweep();
   const r = db.prepare('SELECT * FROM resources WHERE id=?').get(req.params.id);
@@ -85,7 +131,7 @@ router.post('/', authRequired, (req, res) => {
   const {
     title, region, province, chicken_breed, farm_size, egg_color, weight_spec, shell_quality,
     freshness_days, quantity, photos, description, start_price, min_increment,
-    duration_hours, unit_label, unit_size, intro_video,
+    duration_hours, unit_label, unit_size, intro_video, defect_rate, defect_note,
   } = req.body;
 
   if (!title || !start_price || !quantity || !duration_hours) {
@@ -105,14 +151,17 @@ router.post('/', authRequired, (req, res) => {
     INSERT INTO resources (
       farm_id, title, region, province, chicken_breed, farm_size, egg_color, weight_spec, shell_quality,
       freshness_days, quantity, photos, description, start_price, min_increment, current_price,
-      start_at, end_at, status, created_at, kind, unit_label, unit_size, intro_video, review_status
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved')
+      start_at, end_at, status, created_at, kind, unit_label, unit_size, intro_video,
+      defect_rate, defect_note, review_status
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved')
   `).run(
     req.user.id, title, region || req.user.region, province || null,
     chicken_breed, farm_size, egg_color, weight_spec, shell_quality,
     freshness_days, quantity, JSON.stringify(photos || []), description, startPrice, inc, startPrice,
     now, endAt, initialStatus, now, kind, unit_label || '元/箱',
     unit_size || '车', intro_video || null,
+    defect_rate != null ? Number(defect_rate) : null,
+    defect_note || null,
   );
 
   const r = db.prepare('SELECT * FROM resources WHERE id=?').get(info.lastInsertRowid);

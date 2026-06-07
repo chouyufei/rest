@@ -190,6 +190,8 @@ addColumnIfMissing('users', 'username', 'username TEXT');
 addColumnIfMissing('resources', 'last_bid_at', 'last_bid_at INTEGER');
 addColumnIfMissing('resources', 'unit_size', "unit_size TEXT DEFAULT '车'");
 addColumnIfMissing('resources', 'intro_video', 'intro_video TEXT');
+addColumnIfMissing('resources', 'defect_rate', 'defect_rate REAL');
+addColumnIfMissing('resources', 'defect_note', 'defect_note TEXT');
 
 db.exec(`CREATE TABLE IF NOT EXISTS app_settings (
   key TEXT PRIMARY KEY,
