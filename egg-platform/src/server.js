@@ -21,6 +21,7 @@ app.use('/api/messages', require('./routes/messages'));
 app.use('/api/admin', require('./routes/admin'));
 app.use('/api/upload', require('./routes/upload'));
 app.use('/api/pay', require('./routes/pay'));
+app.use('/api/wallet', require('./routes/wallet'));
 
 app.get('/api/health', (req, res) => {
   sweep();

@@ -232,4 +232,68 @@ router.put('/deposit-settings', (req, res) => {
   });
 });
 
+// ===== 提现审核 =====
+const balance = require('../services/balance');
+
+router.get('/withdrawals', (req, res) => {
+  const status = req.query.status;
+  let sql = `
+    SELECT w.*, u.name AS user_name, u.phone AS user_phone, u.role AS user_role
+    FROM withdrawals w JOIN users u ON u.id = w.user_id
+  `;
+  const params = [];
+  if (status) { sql += ' WHERE w.status=?'; params.push(status); }
+  sql += ' ORDER BY w.applied_at DESC LIMIT 200';
+  res.json({ withdrawals: db.prepare(sql).all(...params) });
+});
+
+router.post('/withdrawals/:id/approve', (req, res) => {
+  const w = db.prepare('SELECT * FROM withdrawals WHERE id=?').get(req.params.id);
+  if (!w) return res.status(404).json({ error: '申请不存在' });
+  if (w.status !== 'pending') return res.status(400).json({ error: '仅待审核可批准' });
+  db.prepare(`UPDATE withdrawals SET status='approved', processed_at=?, processed_by=? WHERE id=?`)
+    .run(Date.now(), req.user.id, w.id);
+  notify(w.user_id, 'withdraw_approved', '提现已批准',
+    `您的 ${w.amount} 元提现申请已批准，将尽快打款`, w.id);
+  res.json({ ok: true });
+});
+
+router.post('/withdrawals/:id/reject', (req, res) => {
+  const { reason } = req.body || {};
+  const w = db.prepare('SELECT * FROM withdrawals WHERE id=?').get(req.params.id);
+  if (!w) return res.status(404).json({ error: '申请不存在' });
+  if (!['pending', 'approved'].includes(w.status)) return res.status(400).json({ error: '当前状态无法拒绝' });
+  db.prepare(`UPDATE withdrawals SET status='rejected', processed_at=?, processed_by=?, failure_reason=? WHERE id=?`)
+    .run(Date.now(), req.user.id, reason || '管理员驳回', w.id);
+  // 解冻金额回到用户可用余额
+  balance.unlock(w.user_id, w.amount, {
+    type: 'withdraw_refund',
+    ref_type: 'withdrawal',
+    ref_id: w.id,
+    note: reason ? `提现被拒：${reason}` : '提现被拒',
+  });
+  notify(w.user_id, 'withdraw_rejected', '提现被拒',
+    `您的 ${w.amount} 元提现申请被拒：${reason || '管理员驳回'}，金额已退回余额`, w.id);
+  res.json({ ok: true });
+});
+
+router.post('/withdrawals/:id/mark-paid', (req, res) => {
+  const { out_trade_no } = req.body || {};
+  const w = db.prepare('SELECT * FROM withdrawals WHERE id=?').get(req.params.id);
+  if (!w) return res.status(404).json({ error: '申请不存在' });
+  if (!['pending', 'approved'].includes(w.status)) return res.status(400).json({ error: '当前状态无法标记为已打款' });
+  db.prepare(`UPDATE withdrawals SET status='paid', out_trade_no=?, processed_at=?, processed_by=? WHERE id=?`)
+    .run(out_trade_no || null, Date.now(), req.user.id, w.id);
+  // 从冻结余额扣除（消耗 locked）
+  balance.consume(w.user_id, w.amount, {
+    type: 'withdraw_paid',
+    ref_type: 'withdrawal',
+    ref_id: w.id,
+    note: out_trade_no ? `提现已打款 ${out_trade_no}` : '提现已打款',
+  });
+  notify(w.user_id, 'withdraw_paid', '提现已到账',
+    `您的 ${w.amount} 元提现已打款${out_trade_no ? '（流水号 ' + out_trade_no + '）' : ''}`, w.id);
+  res.json({ ok: true });
+});
+
 module.exports = router;

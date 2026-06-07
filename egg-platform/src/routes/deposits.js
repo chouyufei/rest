@@ -2,6 +2,7 @@ const express = require('express');
 const db = require('../db');
 const { authRequired } = require('../middleware/auth');
 const { computeDepositAmount } = require('../services/auction');
+const balance = require('../services/balance');
 
 const router = express.Router();
 
@@ -67,7 +68,14 @@ router.post('/refund/:id', authRequired, (req, res) => {
   if (dep.status !== 'available') return res.status(400).json({ error: '保证金当前不可退还' });
   if (dep.resource_id) return res.status(400).json({ error: '已绑定到货源的保证金需待竞拍结束后释放' });
   db.prepare(`UPDATE deposits SET status='released', released_at=? WHERE id=?`).run(Date.now(), dep.id);
-  res.json({ ok: true, message: '保证金已退还（演示模式）' });
+  // 入账到用户钱包余额
+  balance.credit(req.user.id, dep.amount, {
+    type: 'deposit_release',
+    ref_type: 'deposit',
+    ref_id: dep.id,
+    note: `退还未使用保证金 #${dep.id}`,
+  });
+  res.json({ ok: true, message: `已退还 ${dep.amount} 元至钱包余额` });
 });
 
 module.exports = router;

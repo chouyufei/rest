@@ -186,6 +186,8 @@ addColumnIfMissing('users', 'farm_photos', 'farm_photos TEXT');
 addColumnIfMissing('users', 'quarantine_photos', 'quarantine_photos TEXT');
 addColumnIfMissing('users', 'wechat_openid', 'wechat_openid TEXT');
 addColumnIfMissing('users', 'username', 'username TEXT');
+addColumnIfMissing('users', 'balance', 'balance REAL NOT NULL DEFAULT 0');         // 钱包余额（保证金释放 / 退款 沉淀于此）
+addColumnIfMissing('users', 'locked_balance', 'locked_balance REAL NOT NULL DEFAULT 0');  // 提现申请中冻结部分
 
 addColumnIfMissing('resources', 'last_bid_at', 'last_bid_at INTEGER');
 addColumnIfMissing('resources', 'unit_size', "unit_size TEXT DEFAULT '车'");
@@ -197,7 +199,41 @@ db.exec(`CREATE TABLE IF NOT EXISTS app_settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,
   updated_at INTEGER NOT NULL
-);`);
+);
+
+CREATE TABLE IF NOT EXISTS balance_transactions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  amount REAL NOT NULL,                -- 正数=入账，负数=出账
+  type TEXT NOT NULL,                  -- deposit_release | withdraw_lock | withdraw_paid | withdraw_refund | adjust
+  ref_type TEXT,                       -- deposit | withdrawal | manual
+  ref_id INTEGER,
+  balance_after REAL NOT NULL,
+  note TEXT,
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (user_id) REFERENCES users(id)
+);
+CREATE INDEX IF NOT EXISTS idx_balance_tx_user ON balance_transactions(user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS withdrawals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  amount REAL NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected','paid','failed','cancelled')),
+  method TEXT NOT NULL DEFAULT 'wechat',  -- wechat | bank
+  account_name TEXT,
+  account_no TEXT,
+  bank_name TEXT,
+  applied_at INTEGER NOT NULL,
+  processed_at INTEGER,
+  processed_by INTEGER,
+  out_trade_no TEXT,
+  failure_reason TEXT,
+  FOREIGN KEY (user_id) REFERENCES users(id)
+);
+CREATE INDEX IF NOT EXISTS idx_withdrawals_user ON withdrawals(user_id, applied_at DESC);
+CREATE INDEX IF NOT EXISTS idx_withdrawals_status ON withdrawals(status, applied_at DESC);
+`);
 addColumnIfMissing('deposits', 'resource_id', 'resource_id INTEGER');
 
 // 一次性迁移：让 deposits.type 允许 'demand_quality'（SQLite 不支持 ALTER CHECK，只能重建表）

@@ -1,5 +1,22 @@
 const db = require('../db');
 const settings = require('./settings');
+const balance = require('./balance');
+
+// 把一组保证金（按 SQL 条件查得）释放并自动入账到用户余额
+// 返回释放数量。已是 released/deducted 的会被 WHERE 过滤掉，避免重复入账
+function releaseAndCredit(whereClause, ...params) {
+  const rows = db.prepare(`SELECT * FROM deposits WHERE status IN ('available','frozen') AND ${whereClause}`).all(...params);
+  for (const dep of rows) {
+    db.prepare(`UPDATE deposits SET status='released', released_at=? WHERE id=?`).run(Date.now(), dep.id);
+    balance.credit(dep.user_id, dep.amount, {
+      type: 'deposit_release',
+      ref_type: 'deposit',
+      ref_id: dep.id,
+      note: `保证金释放 #${dep.id}`,
+    });
+  }
+  return rows.length;
+}
 const {
   notify,
   notifyAuctionWon,
@@ -152,19 +169,14 @@ function closeAuction(resourceId, force = false) {
     `).all(r.id, r.current_bidder_id);
     for (const l of losers) notifyAuctionLost(l.bidder_id, r, r.current_price);
 
-    db.prepare(`
-      UPDATE deposits SET status='available', released_at=?
-      WHERE type='buyer_bid' AND resource_id=? AND user_id != ? AND status IN ('available','frozen')
-    `).run(now, r.id, r.current_bidder_id);
+    // 未中标的竞拍保证金：释放 + 自动入账到对应用户余额
+    releaseAndCredit(`type='buyer_bid' AND resource_id=? AND user_id != ?`, r.id, r.current_bidder_id);
     // 发布方（货源/求购）保证金：在收货确认后通过 releaseDeposits(orderId) 再释放，这里保持冻结
   } else {
     db.prepare(`UPDATE resources SET status='failed' WHERE id=?`).run(r.id);
     notifyAuctionFailedToPublisher(r.farm_id, r, isSupply);                // 发布方：流拍
-    // 流拍：所有保证金都释放（出价方 + 发布方）
-    db.prepare(`
-      UPDATE deposits SET status='available', released_at=?
-      WHERE resource_id=? AND status IN ('available','frozen')
-    `).run(now, r.id);
+    // 流拍：该资源所有保证金（出价方 + 发布方）释放 + 入账
+    releaseAndCredit(`resource_id=?`, r.id);
   }
 }
 
@@ -199,11 +211,8 @@ function sweep() {
 function releaseDeposits(orderId) {
   const order = db.prepare('SELECT * FROM orders WHERE id=?').get(orderId);
   if (!order) return;
-  // 释放该资源上所有保证金：中标者的竞拍保证金 + 发布方的货源/求购保证金
-  db.prepare(`
-    UPDATE deposits SET status='available', released_at=?
-    WHERE resource_id=? AND status IN ('available','frozen')
-  `).run(Date.now(), order.resource_id);
+  // 释放该资源上所有剩余保证金：中标者的竞拍保证金 + 发布方的货源/求购保证金 → 入账
+  releaseAndCredit(`resource_id=?`, order.resource_id);
 }
 
 module.exports = {
