@@ -1,4 +1,5 @@
 const db = require('../db');
+const settings = require('./settings');
 const {
   notify,
   notifyAuctionWon,
@@ -9,8 +10,21 @@ const {
 } = require('./notification');
 
 const ANTI_SNIPE_WINDOW_MS = 5 * 60 * 1000; // 最后一次出价后静默此时长即成交
-const FARM_DEPOSIT_AMOUNT = Number(process.env.FARM_DEPOSIT_AMOUNT) || 0.1;
-const BUYER_DEPOSIT_AMOUNT = Number(process.env.BUYER_DEPOSIT_AMOUNT) || 0.1;
+
+// 保证金金额计算：根据 type + 数量(车数) + 后台配置档位
+// amount = ceil(qty / step_qty) * per_step
+// 例：默认 step_qty=2，supply=2000：1车→2000，2车→2000，3车→4000，5车→6000
+const TYPE_TO_KEY = {
+  farm_quality: 'deposit_supply_per_step',
+  demand_quality: 'deposit_demand_per_step',
+  buyer_bid: 'deposit_bid_per_step',
+};
+function computeDepositAmount(type, qty) {
+  const perStep = Number(settings.get(TYPE_TO_KEY[type])) || 0;
+  const stepQty = Math.max(1, Number(settings.get('deposit_step_qty')) || 2);
+  const q = Math.max(1, Number(qty) || 1);
+  return Math.ceil(q / stepQty) * perStep;
+}
 
 function getResource(id) {
   return db.prepare('SELECT * FROM resources WHERE id = ?').get(id);
@@ -142,12 +156,14 @@ function closeAuction(resourceId, force = false) {
       UPDATE deposits SET status='available', released_at=?
       WHERE type='buyer_bid' AND resource_id=? AND user_id != ? AND status IN ('available','frozen')
     `).run(now, r.id, r.current_bidder_id);
+    // 发布方（货源/求购）保证金：在收货确认后通过 releaseDeposits(orderId) 再释放，这里保持冻结
   } else {
     db.prepare(`UPDATE resources SET status='failed' WHERE id=?`).run(r.id);
     notifyAuctionFailedToPublisher(r.farm_id, r, isSupply);                // 发布方：流拍
+    // 流拍：所有保证金都释放（出价方 + 发布方）
     db.prepare(`
       UPDATE deposits SET status='available', released_at=?
-      WHERE type='buyer_bid' AND resource_id=? AND status IN ('available','frozen')
+      WHERE resource_id=? AND status IN ('available','frozen')
     `).run(now, r.id);
   }
 }
@@ -183,10 +199,10 @@ function sweep() {
 function releaseDeposits(orderId) {
   const order = db.prepare('SELECT * FROM orders WHERE id=?').get(orderId);
   if (!order) return;
-  // 释放中标者绑定在该资源上的竞拍保证金
+  // 释放该资源上所有保证金：中标者的竞拍保证金 + 发布方的货源/求购保证金
   db.prepare(`
     UPDATE deposits SET status='available', released_at=?
-    WHERE type='buyer_bid' AND resource_id=? AND status IN ('available','frozen')
+    WHERE resource_id=? AND status IN ('available','frozen')
   `).run(Date.now(), order.resource_id);
 }
 
@@ -197,7 +213,6 @@ module.exports = {
   triggerAutoBids,
   releaseDeposits,
   resourceDeposit,
-  FARM_DEPOSIT_AMOUNT,
-  BUYER_DEPOSIT_AMOUNT,
+  computeDepositAmount,
   ANTI_SNIPE_WINDOW_MS,
 };

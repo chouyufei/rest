@@ -202,4 +202,34 @@ router.put('/notice-settings', (req, res) => {
   res.json({ ok: true, settings: settings.getAll() });
 });
 
+// ===== 保证金金额设置 =====
+router.get('/deposit-settings', (req, res) => {
+  const s = settings.getAll();
+  res.json({
+    deposit_step_qty: s.deposit_step_qty,
+    deposit_supply_per_step: s.deposit_supply_per_step,
+    deposit_demand_per_step: s.deposit_demand_per_step,
+    deposit_bid_per_step: s.deposit_bid_per_step,
+  });
+});
+
+router.put('/deposit-settings', (req, res) => {
+  const fields = ['deposit_step_qty', 'deposit_supply_per_step', 'deposit_demand_per_step', 'deposit_bid_per_step'];
+  for (const f of fields) {
+    if (req.body[f] !== undefined) {
+      const n = Number(req.body[f]);
+      if (!(n > 0)) return res.status(400).json({ error: `${f} 必须为正数` });
+      settings.set(f, n);
+    }
+  }
+  const s = settings.getAll();
+  res.json({
+    ok: true,
+    deposit_step_qty: s.deposit_step_qty,
+    deposit_supply_per_step: s.deposit_supply_per_step,
+    deposit_demand_per_step: s.deposit_demand_per_step,
+    deposit_bid_per_step: s.deposit_bid_per_step,
+  });
+});
+
 module.exports = router;

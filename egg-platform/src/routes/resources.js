@@ -1,7 +1,7 @@
 const express = require('express');
 const db = require('../db');
 const { authRequired, roleRequired } = require('../middleware/auth');
-const { closeAuction, sweep, FARM_DEPOSIT_AMOUNT } = require('../services/auction');
+const { closeAuction, sweep, computeDepositAmount } = require('../services/auction');
 
 const router = express.Router();
 
@@ -117,15 +117,30 @@ function maskName(name) {
 
 router.post('/', authRequired, (req, res) => {
   const kind = req.body.kind === 'demand' ? 'demand' : 'supply';
+  const qtyNum = Number(req.body.quantity) || 1;
 
+  let depositRow = null;
   if (kind === 'supply') {
     if (req.user.role !== 'farm') return res.status(403).json({ error: '货源仅限养殖场发布' });
     if (req.user.license_status !== 'approved') return res.status(403).json({ error: '请先完成资质审核' });
-    const farmDep = db.prepare(`SELECT * FROM deposits WHERE user_id=? AND type='farm_quality' AND status IN ('available','frozen')`).get(req.user.id);
-    if (!farmDep) return res.status(403).json({ error: `请先缴纳 ${FARM_DEPOSIT_AMOUNT} 元品质保证金` });
+    const need = computeDepositAmount('farm_quality', qtyNum);
+    depositRow = db.prepare(`
+      SELECT * FROM deposits
+      WHERE user_id=? AND type='farm_quality' AND status IN ('available','frozen')
+        AND resource_id IS NULL AND amount >= ?
+      ORDER BY paid_at DESC LIMIT 1
+    `).get(req.user.id, need);
+    if (!depositRow) return res.status(403).json({ error: `请先缴纳 ${need} 元品质保证金` });
   } else {
     if (req.user.role !== 'buyer') return res.status(403).json({ error: '求购仅限采购商发布' });
-    // 求购发布免保证金；应标的养殖场按场缴纳竞拍保证金
+    const need = computeDepositAmount('demand_quality', qtyNum);
+    depositRow = db.prepare(`
+      SELECT * FROM deposits
+      WHERE user_id=? AND type='demand_quality' AND status IN ('available','frozen')
+        AND resource_id IS NULL AND amount >= ?
+      ORDER BY paid_at DESC LIMIT 1
+    `).get(req.user.id, need);
+    if (!depositRow) return res.status(403).json({ error: `请先缴纳 ${need} 元求购保证金` });
   }
 
   const {
@@ -163,6 +178,11 @@ router.post('/', authRequired, (req, res) => {
     defect_rate != null ? Number(defect_rate) : null,
     defect_note || null,
   );
+
+  // 把保证金绑定到本次发布的资源，竞拍结束后自动 release（参见 services/auction releaseDeposits）
+  if (depositRow) {
+    db.prepare(`UPDATE deposits SET resource_id=?, status='frozen' WHERE id=?`).run(info.lastInsertRowid, depositRow.id);
+  }
 
   const r = db.prepare('SELECT * FROM resources WHERE id=?').get(info.lastInsertRowid);
   res.json({ resource: enrich(r) });

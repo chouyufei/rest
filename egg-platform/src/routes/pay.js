@@ -2,7 +2,7 @@ const express = require('express');
 const db = require('../db');
 const { authRequired } = require('../middleware/auth');
 const { notify } = require('../services/notification');
-const { FARM_DEPOSIT_AMOUNT: FARM_DEPOSIT, BUYER_DEPOSIT_AMOUNT: BUYER_DEPOSIT } = require('../services/auction');
+const { computeDepositAmount } = require('../services/auction');
 
 const router = express.Router();
 
@@ -56,21 +56,28 @@ router.get('/mode', (req, res) => {
 router.post('/create-order', authRequired, async (req, res) => {
   const { type } = req.body;
   const resourceId = req.body.resource_id ? Number(req.body.resource_id) : null;
-  if (!['farm_quality', 'buyer_bid'].includes(type)) {
+  const qty = Number(req.body.qty) || 1;
+  if (!['farm_quality', 'buyer_bid', 'demand_quality'].includes(type)) {
     return res.status(400).json({ error: '保证金类型错误' });
   }
   if (type === 'farm_quality' && req.user.role !== 'farm') return res.status(403).json({ error: '仅养殖场需缴纳品质保证金' });
   if (type === 'farm_quality' && req.user.license_status !== 'approved') {
     return res.status(403).json({ error: '请先完成资质审核' });
   }
+  if (type === 'demand_quality' && req.user.role !== 'buyer') return res.status(403).json({ error: '仅采购商需缴纳求购保证金' });
   if (type === 'buyer_bid' && !resourceId) return res.status(400).json({ error: '竞拍保证金需指定货源' });
 
-  const existing = type === 'farm_quality'
-    ? db.prepare(`SELECT * FROM deposits WHERE user_id=? AND type='farm_quality' AND status IN ('available','frozen')`).get(req.user.id)
-    : db.prepare(`SELECT * FROM deposits WHERE user_id=? AND type='buyer_bid' AND resource_id=? AND status IN ('available','frozen')`).get(req.user.id, resourceId);
-  if (existing) return res.json({ ok: true, paid: true, message: '已缴纳保证金' });
+  const amount = computeDepositAmount(type, type === 'buyer_bid'
+    ? (db.prepare('SELECT quantity FROM resources WHERE id=?').get(resourceId)?.quantity || qty)
+    : qty);
 
-  const amount = type === 'farm_quality' ? FARM_DEPOSIT : BUYER_DEPOSIT;
+  // 查找已有可复用的保证金：
+  //   - 货源/求购：未绑定到任何资源 + 金额 ≥ 本次需缴
+  //   - 竞拍：按 resource_id 绑定
+  const existing = type === 'buyer_bid'
+    ? db.prepare(`SELECT * FROM deposits WHERE user_id=? AND type='buyer_bid' AND resource_id=? AND status IN ('available','frozen')`).get(req.user.id, resourceId)
+    : db.prepare(`SELECT * FROM deposits WHERE user_id=? AND type=? AND resource_id IS NULL AND amount>=? AND status IN ('available','frozen') ORDER BY paid_at DESC LIMIT 1`).get(req.user.id, type, amount);
+  if (existing) return res.json({ ok: true, paid: true, deposit: existing, message: '已缴纳保证金' });
 
   if (!isLive) {
     const orderNo = 'DEMO' + Date.now() + Math.floor(Math.random() * 1000);

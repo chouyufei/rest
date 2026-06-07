@@ -199,6 +199,33 @@ db.exec(`CREATE TABLE IF NOT EXISTS app_settings (
   updated_at INTEGER NOT NULL
 );`);
 addColumnIfMissing('deposits', 'resource_id', 'resource_id INTEGER');
+
+// 一次性迁移：让 deposits.type 允许 'demand_quality'（SQLite 不支持 ALTER CHECK，只能重建表）
+(function ensureDepositTypeCheck() {
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='deposits'").get();
+  if (!row || !row.sql || row.sql.includes('demand_quality')) return;
+  db.exec(`
+    BEGIN;
+    CREATE TABLE deposits_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      type TEXT NOT NULL CHECK(type IN ('farm_quality','buyer_bid','demand_quality')),
+      amount REAL NOT NULL,
+      status TEXT NOT NULL DEFAULT 'available' CHECK(status IN ('available','frozen','released','deducted')),
+      frozen_for INTEGER,
+      note TEXT,
+      paid_at INTEGER NOT NULL,
+      released_at INTEGER,
+      resource_id INTEGER,
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    );
+    INSERT INTO deposits_new (id, user_id, type, amount, status, frozen_for, note, paid_at, released_at, resource_id)
+      SELECT id, user_id, type, amount, status, frozen_for, note, paid_at, released_at, resource_id FROM deposits;
+    DROP TABLE deposits;
+    ALTER TABLE deposits_new RENAME TO deposits;
+    COMMIT;
+  `);
+})();
 addColumnIfMissing('pay_orders', 'resource_id', 'resource_id INTEGER');
 
 db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username) WHERE username IS NOT NULL;`);
