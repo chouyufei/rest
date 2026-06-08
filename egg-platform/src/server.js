@@ -2,7 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const db = require('./db');
-const { sweep } = require('./services/auction');
+const { sweep, reconcileLegacyDeposits } = require('./services/auction');
 
 const app = express();
 app.use(cors());
@@ -45,4 +45,8 @@ setInterval(() => {
 
 app.listen(PORT, () => {
   console.log(`凤伯乐 API running on http://localhost:${PORT}`);
+  // 启动时把"应已释放但未入账"的历史保证金补入账户余额（幂等）
+  try {
+    reconcileLegacyDeposits();
+  } catch (e) { console.error('reconcileLegacyDeposits error', e); }
 });

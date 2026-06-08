@@ -234,6 +234,16 @@ router.put('/deposit-settings', (req, res) => {
 
 // ===== 提现审核 =====
 const balance = require('../services/balance');
+const { reconcileLegacyDeposits } = require('../services/auction');
+
+router.post('/reconcile-deposits', (req, res) => {
+  try {
+    reconcileLegacyDeposits();
+    res.json({ ok: true, message: '已重新对账历史保证金' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 router.get('/withdrawals', (req, res) => {
   const status = req.query.status;

@@ -1,7 +1,7 @@
 const express = require('express');
 const db = require('../db');
 const { authRequired, roleRequired } = require('../middleware/auth');
-const { closeAuction, sweep, computeDepositAmount } = require('../services/auction');
+const { closeAuction, sweep, computeDepositAmount, releaseResourceDeposits } = require('../services/auction');
 
 const router = express.Router();
 
@@ -209,6 +209,8 @@ router.post('/:id/cancel', authRequired, (req, res) => {
   const bidCount = db.prepare('SELECT COUNT(*) c FROM bids WHERE resource_id=?').get(r.id).c;
   if (bidCount > 0) return res.status(400).json({ error: '已有出价，无法取消' });
   db.prepare(`UPDATE resources SET status='cancelled' WHERE id=?`).run(r.id);
+  // 释放本资源所有保证金 → 入用户余额
+  releaseResourceDeposits(r.id);
   res.json({ ok: true });
 });
 

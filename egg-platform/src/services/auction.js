@@ -3,11 +3,14 @@ const settings = require('./settings');
 const balance = require('./balance');
 
 // 把一组保证金（按 SQL 条件查得）释放并自动入账到用户余额
-// 返回释放数量。已是 released/deducted 的会被 WHERE 过滤掉，避免重复入账
+// 已 released/deducted 的会被 WHERE 过滤掉；balance_transactions 表的
+// dedup 检查避免万一重复入账
 function releaseAndCredit(whereClause, ...params) {
   const rows = db.prepare(`SELECT * FROM deposits WHERE status IN ('available','frozen') AND ${whereClause}`).all(...params);
   for (const dep of rows) {
     db.prepare(`UPDATE deposits SET status='released', released_at=? WHERE id=?`).run(Date.now(), dep.id);
+    const dup = db.prepare(`SELECT id FROM balance_transactions WHERE type='deposit_release' AND ref_type='deposit' AND ref_id=?`).get(dep.id);
+    if (dup) continue;
     balance.credit(dep.user_id, dep.amount, {
       type: 'deposit_release',
       ref_type: 'deposit',
@@ -16,6 +19,35 @@ function releaseAndCredit(whereClause, ...params) {
     });
   }
   return rows.length;
+}
+
+// 释放某个资源相关的所有保证金（取消 / 流拍 / 结束竞拍场景的便捷入口）
+function releaseResourceDeposits(resourceId) {
+  return releaseAndCredit(`resource_id=?`, resourceId);
+}
+
+// 一次性数据补救：把所有"应已释放但未入账"的历史保证金，统一补释放 + 入账。
+// 适用于在钱包系统上线"之前"已经处于 available 状态、或绑定到已结束资源
+// 但仍是 frozen 状态的旧记录。幂等：靠 balance_transactions dedup 不会重复入账。
+function reconcileLegacyDeposits() {
+  // 1) status='available' 且没 resource_id（旧的"一次性保证金"模型留下来的）
+  releaseAndCredit(`status='available' AND resource_id IS NULL`);
+
+  // 2) status='frozen' 但绑定的资源已结束（sold/failed/cancelled）→ 漏放的
+  const stuck = db.prepare(`
+    SELECT d.id FROM deposits d
+    JOIN resources r ON r.id = d.resource_id
+    WHERE d.status='frozen' AND r.status IN ('sold','failed','cancelled')
+  `).all();
+  for (const row of stuck) releaseAndCredit(`id=?`, row.id);
+
+  // 3) status='available' 且绑定的资源已结束 → 之前的 closeAuction 改的旧记录
+  const oldReleased = db.prepare(`
+    SELECT d.id FROM deposits d
+    JOIN resources r ON r.id = d.resource_id
+    WHERE d.status='available' AND r.status IN ('sold','failed','cancelled')
+  `).all();
+  for (const row of oldReleased) releaseAndCredit(`id=?`, row.id);
 }
 const {
   notify,
@@ -223,5 +255,7 @@ module.exports = {
   releaseDeposits,
   resourceDeposit,
   computeDepositAmount,
+  releaseResourceDeposits,
+  reconcileLegacyDeposits,
   ANTI_SNIPE_WINDOW_MS,
 };
