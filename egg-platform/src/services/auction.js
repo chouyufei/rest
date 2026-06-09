@@ -190,29 +190,6 @@ function closeAuction(resourceId, force = false) {
       INSERT INTO orders (resource_id, farm_id, buyer_id, final_price, quantity, status, created_at)
       VALUES (?, ?, ?, ?, ?, 'pending_group', ?)
     `).run(r.id, farmId, buyerId, r.current_price, r.quantity, now);
-    const orderId = orderInfo.lastInsertRowid;
-
-    // 自动建群：分配 group_id + 状态 communicating + 推系统消息
-    const groupId = `G${orderId}-${Date.now().toString(36)}`;
-    db.prepare(`UPDATE orders SET group_id=?, status='communicating', group_created_at=? WHERE id=?`)
-      .run(groupId, now, orderId);
-
-    const sysSender = farmId; // 任选一方作占位 sender；is_system=1 渲染时覆盖名称
-    db.prepare(`
-      INSERT INTO chat_messages (order_id, sender_id, content, kind, is_system, created_at)
-      VALUES (?, ?, ?, 'text', 1, ?)
-    `).run(orderId, sysSender, `🎉 订单 #${orderId} 已成交，沟通群已建立。\n成交价 ¥${r.current_price}，数量 ${r.quantity} ${r.unit_size || '车'}。`, now);
-
-    const qrUrl = settings.get('service_qr_url');
-    const qrOwner = settings.get('service_qr_owner') || '凤伯乐 · 客服';
-    if (qrUrl) {
-      db.prepare(`
-        INSERT INTO chat_messages (order_id, sender_id, content, kind, image_url, is_system, created_at)
-        VALUES (?, ?, ?, 'image', ?, 1, ?)
-      `).run(orderId, sysSender,
-        `📲 请尽快扫码添加「${qrOwner}」的企业微信，后续发货、对货、回款都在企微群里同步。`,
-        qrUrl, now + 1);
-    }
 
     // 站内 + 短信 + 微信订阅消息 三通道
     notifyOrderReceived(r.farm_id, r, r.current_price, isSupply);          // 发布方：单已被拍下
@@ -220,7 +197,7 @@ function closeAuction(resourceId, force = false) {
     notifyPlatformOnDeal(r, farmId, buyerId, r.current_price);             // 平台方：企业微信 + 短信
 
     // 订单已生成 → 给买卖双方下发企业微信客服二维码 + 提示扫码加好友
-    notifyOrderGroupReady(orderId, buyerId, farmId, r);
+    notifyOrderGroupReady(orderInfo.lastInsertRowid, buyerId, farmId, r);
 
     // 未中标的其他出价者：发"未中标"通知 + 释放保证金
     const losers = db.prepare(`
