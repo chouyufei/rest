@@ -55,6 +55,7 @@ const {
   notifyAuctionLost,
   notifyOrderReceived,
   notifyAuctionFailedToPublisher,
+  notifyOrderGroupReady,
   notifyPlatformOnDeal,
 } = require('./notification');
 
@@ -185,7 +186,7 @@ function closeAuction(resourceId, force = false) {
     db.prepare(`UPDATE resources SET status='sold' WHERE id=?`).run(r.id);
     const farmId = isSupply ? r.farm_id : r.current_bidder_id;
     const buyerId = isSupply ? r.current_bidder_id : r.farm_id;
-    db.prepare(`
+    const orderInfo = db.prepare(`
       INSERT INTO orders (resource_id, farm_id, buyer_id, final_price, quantity, status, created_at)
       VALUES (?, ?, ?, ?, ?, 'pending_group', ?)
     `).run(r.id, farmId, buyerId, r.current_price, r.quantity, now);
@@ -194,6 +195,9 @@ function closeAuction(resourceId, force = false) {
     notifyOrderReceived(r.farm_id, r, r.current_price, isSupply);          // 发布方：单已被拍下
     notifyAuctionWon(r.current_bidder_id, r, r.current_price);             // 中标方：竞拍成功
     notifyPlatformOnDeal(r, farmId, buyerId, r.current_price);             // 平台方：企业微信 + 短信
+
+    // 订单已生成 → 给买卖双方下发企业微信客服二维码 + 提示扫码加好友
+    notifyOrderGroupReady(orderInfo.lastInsertRowid, buyerId, farmId, r);
 
     // 未中标的其他出价者：发"未中标"通知 + 释放保证金
     const losers = db.prepare(`

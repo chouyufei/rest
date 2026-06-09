@@ -4,11 +4,11 @@ const wechat = require('./wechat-notify');
 const wecom = require('./wecom-notify');
 const settings = require('./settings');
 
-function notify(userId, type, title, content, relatedId = null) {
+function notify(userId, type, title, content, relatedId = null, imageUrl = null) {
   db.prepare(`
-    INSERT INTO messages (user_id, type, title, content, related_id, created_at)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(userId, type, title, content, relatedId, Date.now());
+    INSERT INTO messages (user_id, type, title, content, related_id, image_url, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(userId, type, title, content, relatedId, imageUrl, Date.now());
 }
 
 function getUser(userId) {
@@ -95,6 +95,33 @@ function notifyAuctionFailedToPublisher(userId, resource, isSupply) {
   dispatchUserChannels(u, 'buyer_lost', resource.title, resource.id, true);
 }
 
+// 场景：订单生成后向买卖双方下发企业微信服务二维码 + 提示扫码加好友
+function notifyOrderGroupReady(orderId, buyerId, sellerId, resource) {
+  const qrUrl = settings.get('service_qr_url');
+  const owner = settings.get('service_qr_owner') || '凤伯乐 · 客服';
+  if (!qrUrl) return;  // 后台未上传二维码则不下发
+
+  const title = '📲 添加客服企业微信';
+  const content = `订单 #${orderId}「${resource.title}」已成交。\n请扫码添加 ${owner} 的企业微信，后续发货、对接、纠纷处理会在群里同步。\n买卖双方都加完后，客服将拉建沟通群。`;
+
+  notify(buyerId,  'order_group', title, content, orderId, qrUrl);
+  notify(sellerId, 'order_group', title, content, orderId, qrUrl);
+
+  // 企业微信机器人：通知客服去人工拉群
+  try {
+    const buyer = getUser(buyerId);
+    const seller = getUser(sellerId);
+    const txt = [
+      '【凤伯乐·待拉群】',
+      `订单 #${orderId}：${resource.title}`,
+      `买方：${buyer && buyer.name || '?'}（${buyer && buyer.phone || '?'}）`,
+      `卖方：${seller && seller.name || '?'}（${seller && seller.phone || '?'}）`,
+      '请等买卖双方扫码加好友后建群。',
+    ].join('\n');
+    wecom.send(txt);
+  } catch (e) {}
+}
+
 // 场景：竞拍成交时通知平台方（企业微信 + 平台短信）
 function notifyPlatformOnDeal(resource, sellerId, buyerId, finalPrice) {
   const seller = getUser(sellerId);
@@ -109,5 +136,6 @@ module.exports = {
   notifyAuctionLost,
   notifyOrderReceived,
   notifyAuctionFailedToPublisher,
+  notifyOrderGroupReady,
   notifyPlatformOnDeal,
 };

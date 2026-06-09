@@ -3,6 +3,7 @@ const db = require('../db');
 const { authRequired } = require('../middleware/auth');
 const { releaseDeposits } = require('../services/auction');
 const { notify } = require('../services/notification');
+const settings = require('../services/settings');
 
 const router = express.Router();
 
@@ -41,7 +42,14 @@ router.get('/:id', authRequired, (req, res) => {
     FROM chat_messages cm JOIN users u ON u.id = cm.sender_id
     WHERE cm.order_id=? ORDER BY cm.created_at ASC
   `).all(o.id);
-  res.json({ order: enrich(o), chats });
+  res.json({
+    order: enrich(o),
+    chats,
+    service_qr: {
+      url: settings.get('service_qr_url') || '',
+      owner: settings.get('service_qr_owner') || '',
+    },
+  });
 });
 
 router.post('/:id/create-group', authRequired, (req, res) => {

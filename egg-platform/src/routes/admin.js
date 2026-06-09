@@ -232,6 +232,25 @@ router.put('/deposit-settings', (req, res) => {
   });
 });
 
+// ===== 客服二维码（订单成交后下发给买卖双方） =====
+router.get('/service-qr', (req, res) => {
+  res.json({
+    service_qr_url: settings.get('service_qr_url') || '',
+    service_qr_owner: settings.get('service_qr_owner') || '',
+  });
+});
+
+router.put('/service-qr', (req, res) => {
+  const { service_qr_url, service_qr_owner } = req.body;
+  if (service_qr_url !== undefined) settings.set('service_qr_url', String(service_qr_url || '').trim());
+  if (service_qr_owner !== undefined) settings.set('service_qr_owner', String(service_qr_owner || '').trim());
+  res.json({
+    ok: true,
+    service_qr_url: settings.get('service_qr_url') || '',
+    service_qr_owner: settings.get('service_qr_owner') || '',
+  });
+});
+
 // ===== 提现审核 =====
 const balance = require('../services/balance');
 const { reconcileLegacyDeposits } = require('../services/auction');

@@ -13,6 +13,10 @@ const DEFAULTS = {
   deposit_supply_per_step: 2000,          // 发布货源 每档金额（元）
   deposit_demand_per_step: 1000,          // 发布求购 每档金额（元）
   deposit_bid_per_step: 1000,             // 竞拍出价 每档金额（元）
+
+  // 企业微信服务二维码：成交后下发给买卖双方扫码加好友
+  service_qr_url: '',                     // 图片 URL（管理员上传后保存）
+  service_qr_owner: '凤伯乐 · 客服',       // 二维码归属人/部门名
 };
 
 function get(key) {
