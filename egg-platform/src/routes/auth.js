@@ -178,6 +178,16 @@ router.get('/me', authRequired, (req, res) => {
   res.json({ user: req.user });
 });
 
+router.post('/location', authRequired, (req, res) => {
+  const lat = Number(req.body.lat);
+  const lng = Number(req.body.lng);
+  if (!isFinite(lat) || !isFinite(lng)) return res.status(400).json({ error: '经纬度无效' });
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return res.status(400).json({ error: '经纬度范围越界' });
+  db.prepare(`UPDATE users SET lat=?, lng=?, location_updated_at=? WHERE id=?`)
+    .run(lat, lng, Date.now(), req.user.id);
+  res.json({ ok: true });
+});
+
 router.patch('/me', authRequired, (req, res) => {
   const { name, avatar, region, address } = req.body;
   db.prepare(`

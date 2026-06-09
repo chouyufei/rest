@@ -188,12 +188,17 @@ addColumnIfMissing('users', 'wechat_openid', 'wechat_openid TEXT');
 addColumnIfMissing('users', 'username', 'username TEXT');
 addColumnIfMissing('users', 'balance', 'balance REAL NOT NULL DEFAULT 0');         // 钱包余额（保证金释放 / 退款 沉淀于此）
 addColumnIfMissing('users', 'locked_balance', 'locked_balance REAL NOT NULL DEFAULT 0');  // 提现申请中冻结部分
+addColumnIfMissing('users', 'lat', 'lat REAL');                                   // 用户最近一次定位
+addColumnIfMissing('users', 'lng', 'lng REAL');
+addColumnIfMissing('users', 'location_updated_at', 'location_updated_at INTEGER');
 
 addColumnIfMissing('resources', 'last_bid_at', 'last_bid_at INTEGER');
 addColumnIfMissing('resources', 'unit_size', "unit_size TEXT DEFAULT '车'");
 addColumnIfMissing('resources', 'intro_video', 'intro_video TEXT');
 addColumnIfMissing('resources', 'defect_rate', 'defect_rate REAL');
 addColumnIfMissing('resources', 'defect_note', 'defect_note TEXT');
+addColumnIfMissing('resources', 'lat', 'lat REAL');                              // 发布时快照养殖场 / 采购商定位
+addColumnIfMissing('resources', 'lng', 'lng REAL');
 
 db.exec(`CREATE TABLE IF NOT EXISTS app_settings (
   key TEXT PRIMARY KEY,

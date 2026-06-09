@@ -2,6 +2,9 @@ const express = require('express');
 const db = require('../db');
 const { authRequired, roleRequired } = require('../middleware/auth');
 const { closeAuction, sweep, computeDepositAmount, releaseResourceDeposits } = require('../services/auction');
+const { distanceKm } = require('../services/geo');
+
+const NEAR_RADIUS_KM = 500;  // 推荐"附近"范围
 
 const router = express.Router();
 
@@ -23,6 +26,10 @@ function enrich(r) {
 router.get('/', (req, res) => {
   sweep();
   const { status, region, province, color, keyword, sort, kind, breed } = req.query;
+  const nearLat = req.query.near_lat ? Number(req.query.near_lat) : null;
+  const nearLng = req.query.near_lng ? Number(req.query.near_lng) : null;
+  const useNear = Number.isFinite(nearLat) && Number.isFinite(nearLng);
+
   let sql = 'SELECT * FROM resources WHERE 1=1';
   const params = [];
   if (kind) { sql += ' AND kind = ?'; params.push(kind); }
@@ -34,13 +41,35 @@ router.get('/', (req, res) => {
   if (breed) { sql += ' AND chicken_breed LIKE ?'; params.push(`%${breed}%`); }
   if (keyword) { sql += ' AND (title LIKE ? OR description LIKE ?)'; params.push(`%${keyword}%`, `%${keyword}%`); }
 
+  // 排序：传 near_lat/near_lng 时按 500km 内优先（近 → 远）+ 创建时间次序
+  // 其他显式 sort 优先于地理排序
   if (sort === 'price_asc') sql += ' ORDER BY current_price ASC';
   else if (sort === 'price_desc') sql += ' ORDER BY current_price DESC';
   else if (sort === 'ending_soon') sql += " ORDER BY CASE WHEN status='auctioning' THEN end_at ELSE end_at + 999999999999 END ASC";
   else sql += ' ORDER BY created_at DESC';
 
-  const rows = db.prepare(sql).all(...params);
-  res.json({ resources: rows.map(enrich) });
+  let rows = db.prepare(sql).all(...params).map(enrich);
+
+  if (useNear) {
+    // 计算每条距离，再"附近优先"重排
+    rows = rows.map(r => {
+      const d = (r.lat != null && r.lng != null) ? distanceKm(nearLat, nearLng, r.lat, r.lng) : null;
+      return { ...r, distance_km: d };
+    });
+    if (!sort) {
+      // 默认排序：先附近（≤500km，按距离升序），再无定位/远（按 created_at 已经在 SQL 排好）
+      rows.sort((a, b) => {
+        const aNear = a.distance_km != null && a.distance_km <= NEAR_RADIUS_KM;
+        const bNear = b.distance_km != null && b.distance_km <= NEAR_RADIUS_KM;
+        if (aNear && !bNear) return -1;
+        if (!aNear && bNear) return 1;
+        if (aNear && bNear) return a.distance_km - b.distance_km;
+        return 0; // 远的保持原 created_at 顺序
+      });
+    }
+  }
+
+  res.json({ resources: rows, near_radius_km: useNear ? NEAR_RADIUS_KM : null });
 });
 
 router.get('/mine', authRequired, (req, res) => {
@@ -162,13 +191,18 @@ router.post('/', authRequired, (req, res) => {
   const startPrice = Number(start_price);
   const initialStatus = kind === 'demand' ? 'auctioning' : 'auctioning';
 
+  // 快照发布者最近一次定位，用于附近推荐
+  const me = db.prepare('SELECT lat, lng FROM users WHERE id=?').get(req.user.id);
+  const snapLat = (req.body.lat != null ? Number(req.body.lat) : (me && me.lat)) ?? null;
+  const snapLng = (req.body.lng != null ? Number(req.body.lng) : (me && me.lng)) ?? null;
+
   const info = db.prepare(`
     INSERT INTO resources (
       farm_id, title, region, province, chicken_breed, farm_size, egg_color, weight_spec, shell_quality,
       freshness_days, quantity, photos, description, start_price, min_increment, current_price,
       start_at, end_at, status, created_at, kind, unit_label, unit_size, intro_video,
-      defect_rate, defect_note, review_status
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved')
+      defect_rate, defect_note, lat, lng, review_status
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved')
   `).run(
     req.user.id, title, region || req.user.region, province || null,
     chicken_breed, farm_size, egg_color, weight_spec, shell_quality,
@@ -177,6 +211,7 @@ router.post('/', authRequired, (req, res) => {
     unit_size || '车', intro_video || null,
     defect_rate != null ? Number(defect_rate) : null,
     defect_note || null,
+    snapLat, snapLng,
   );
 
   // 把保证金绑定到本次发布的资源，竞拍结束后自动 release（参见 services/auction releaseDeposits）
