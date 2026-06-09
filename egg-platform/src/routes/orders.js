@@ -41,7 +41,11 @@ router.get('/:id', authRequired, (req, res) => {
     SELECT cm.*, u.name AS sender_name, u.role AS sender_role
     FROM chat_messages cm JOIN users u ON u.id = cm.sender_id
     WHERE cm.order_id=? ORDER BY cm.created_at ASC
-  `).all(o.id);
+  `).all(o.id).map(c => c.is_system ? {
+    ...c,
+    sender_name: settings.get('service_qr_owner') || '凤伯乐 · 客服',
+    sender_role: 'system',
+  } : c);
   res.json({
     order: enrich(o),
     chats,
@@ -58,8 +62,28 @@ router.post('/:id/create-group', authRequired, (req, res) => {
   if (o.farm_id !== req.user.id && o.buyer_id !== req.user.id) return res.status(403).json({ error: '无权操作' });
   if (o.group_id) return res.json({ ok: true, group_id: o.group_id });
   const groupId = `G${o.id}-${Date.now().toString(36)}`;
+  const now = Date.now();
   db.prepare(`UPDATE orders SET group_id=?, status='communicating', group_created_at=? WHERE id=?`)
-    .run(groupId, Date.now(), o.id);
+    .run(groupId, now, o.id);
+
+  // 群第一条系统消息：欢迎语
+  db.prepare(`
+    INSERT INTO chat_messages (order_id, sender_id, content, kind, is_system, created_at)
+    VALUES (?, ?, ?, 'text', 1, ?)
+  `).run(o.id, o.farm_id, `🎉 订单 #${o.id} 沟通群已建立，请双方在群里对接发货事宜。`, now);
+
+  // 群第二条系统消息：企业微信二维码
+  const qrUrl = settings.get('service_qr_url');
+  const qrOwner = settings.get('service_qr_owner') || '凤伯乐 · 客服';
+  if (qrUrl) {
+    db.prepare(`
+      INSERT INTO chat_messages (order_id, sender_id, content, kind, image_url, is_system, created_at)
+      VALUES (?, ?, ?, 'image', ?, 1, ?)
+    `).run(o.id, o.farm_id,
+      `📲 请尽快扫码添加「${qrOwner}」的企业微信，后续发货、对货、回款都在企微群里同步。`,
+      qrUrl, now + 1);
+  }
+
   notify(o.farm_id, 'group_created', '群已建立', `订单 #${o.id} 沟通群已创建`, o.id);
   notify(o.buyer_id, 'group_created', '群已建立', `订单 #${o.id} 沟通群已创建`, o.id);
   res.json({ ok: true, group_id: groupId });

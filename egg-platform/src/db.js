@@ -200,6 +200,8 @@ addColumnIfMissing('resources', 'defect_note', 'defect_note TEXT');
 addColumnIfMissing('resources', 'lat', 'lat REAL');                              // 发布时快照养殖场 / 采购商定位
 addColumnIfMissing('resources', 'lng', 'lng REAL');
 addColumnIfMissing('messages', 'image_url', 'image_url TEXT');                   // 消息可附带图片（如企业微信二维码）
+addColumnIfMissing('chat_messages', 'image_url', 'image_url TEXT');              // 群聊消息可附带图片（系统下发 QR 等）
+addColumnIfMissing('chat_messages', 'is_system', 'is_system INTEGER NOT NULL DEFAULT 0');
 
 db.exec(`CREATE TABLE IF NOT EXISTS app_settings (
   key TEXT PRIMARY KEY,
