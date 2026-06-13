@@ -72,11 +72,11 @@ router.post('/create-order', authRequired, async (req, res) => {
     : qty);
 
   // 查找已有可复用的保证金：
-  //   - 货源/求购：未绑定到任何资源 + 金额 ≥ 本次需缴
-  //   - 竞拍：按 resource_id 绑定
+  //   - 货源/求购：账户级共用，金额 ≥ 本次需缴即可（不再要求 resource_id IS NULL）
+  //   - 竞拍：按 resource_id 绑定，每场单独
   const existing = type === 'buyer_bid'
     ? db.prepare(`SELECT * FROM deposits WHERE user_id=? AND type='buyer_bid' AND resource_id=? AND status IN ('available','frozen')`).get(req.user.id, resourceId)
-    : db.prepare(`SELECT * FROM deposits WHERE user_id=? AND type=? AND resource_id IS NULL AND amount>=? AND status IN ('available','frozen') ORDER BY paid_at DESC LIMIT 1`).get(req.user.id, type, amount);
+    : db.prepare(`SELECT * FROM deposits WHERE user_id=? AND type=? AND amount>=? AND status IN ('available','frozen') ORDER BY amount DESC, paid_at DESC LIMIT 1`).get(req.user.id, type, amount);
   if (existing) return res.json({ ok: true, paid: true, deposit: existing, message: '已缴纳保证金' });
 
   if (!isLive) {

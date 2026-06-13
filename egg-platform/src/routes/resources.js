@@ -148,6 +148,8 @@ router.post('/', authRequired, (req, res) => {
   const kind = req.body.kind === 'demand' ? 'demand' : 'supply';
   const qtyNum = Number(req.body.quantity) || 1;
 
+  // 货源 / 求购保证金为账户级共用：金额够当前 qty 档位即可，不再独占绑定到资源。
+  // 这样用户一笔保证金可覆盖多个同档位的发布，避免微信"重复支付"提醒。
   let depositRow = null;
   if (kind === 'supply') {
     if (req.user.role !== 'farm') return res.status(403).json({ error: '货源仅限养殖场发布' });
@@ -156,8 +158,8 @@ router.post('/', authRequired, (req, res) => {
     depositRow = db.prepare(`
       SELECT * FROM deposits
       WHERE user_id=? AND type='farm_quality' AND status IN ('available','frozen')
-        AND resource_id IS NULL AND amount >= ?
-      ORDER BY paid_at DESC LIMIT 1
+        AND amount >= ?
+      ORDER BY amount DESC, paid_at DESC LIMIT 1
     `).get(req.user.id, need);
     if (!depositRow) return res.status(403).json({ error: `请先缴纳 ${need} 元品质保证金` });
   } else {
@@ -166,8 +168,8 @@ router.post('/', authRequired, (req, res) => {
     depositRow = db.prepare(`
       SELECT * FROM deposits
       WHERE user_id=? AND type='demand_quality' AND status IN ('available','frozen')
-        AND resource_id IS NULL AND amount >= ?
-      ORDER BY paid_at DESC LIMIT 1
+        AND amount >= ?
+      ORDER BY amount DESC, paid_at DESC LIMIT 1
     `).get(req.user.id, need);
     if (!depositRow) return res.status(403).json({ error: `请先缴纳 ${need} 元求购保证金` });
   }
@@ -214,10 +216,8 @@ router.post('/', authRequired, (req, res) => {
     snapLat, snapLng,
   );
 
-  // 把保证金绑定到本次发布的资源，竞拍结束后自动 release（参见 services/auction releaseDeposits）
-  if (depositRow) {
-    db.prepare(`UPDATE deposits SET resource_id=?, status='frozen' WHERE id=?`).run(info.lastInsertRowid, depositRow.id);
-  }
+  // 货源 / 求购保证金不再绑定到资源，账户级共用。竞拍保证金 (buyer_bid)
+  // 仍按 resource_id 绑定 + 竞拍结束时释放（见 services/auction）
 
   const r = db.prepare('SELECT * FROM resources WHERE id=?').get(info.lastInsertRowid);
   res.json({ resource: enrich(r) });
