@@ -311,23 +311,46 @@ router.post('/withdrawals/:id/reject', (req, res) => {
   res.json({ ok: true });
 });
 
-router.post('/withdrawals/:id/mark-paid', (req, res) => {
-  const { out_trade_no } = req.body || {};
+router.post('/withdrawals/:id/mark-paid', async (req, res) => {
+  const { out_trade_no, mode } = req.body || {};
+  // mode: 'auto'（默认）→ 尝试调商家转账 API；'manual' → 仅记账，需管理员手工打款
   const w = db.prepare('SELECT * FROM withdrawals WHERE id=?').get(req.params.id);
   if (!w) return res.status(404).json({ error: '申请不存在' });
   if (!['pending', 'approved'].includes(w.status)) return res.status(400).json({ error: '当前状态无法标记为已打款' });
+
+  let actualTradeNo = out_trade_no || null;
+  let transferNote = '';
+
+  if (mode !== 'manual' && w.method === 'wechat') {
+    // 尝试微信商家转账
+    const user = db.prepare('SELECT id, wechat_openid FROM users WHERE id=?').get(w.user_id);
+    const { transferToWechat } = require('../services/wechat-transfer');
+    const result = await transferToWechat(w, user && user.wechat_openid);
+    if (result.ok) {
+      actualTradeNo = actualTradeNo || result.transfer_id;
+      transferNote = `微信商家转账已发起 ${result.transfer_id}`;
+    } else if (!result.demo) {
+      // 真实调用失败
+      return res.status(500).json({ error: '商家转账失败: ' + (result.error || '未知'), detail: result });
+    } else {
+      // demo / 未配置 → 提示管理员手工打款，但仍然完成记账
+      transferNote = '⚠ 未接入商家转账，需在微信商户后台手工打款';
+    }
+  } else if (w.method === 'bank') {
+    transferNote = '银行卡转账需后台财务线下操作';
+  }
+
   db.prepare(`UPDATE withdrawals SET status='paid', out_trade_no=?, processed_at=?, processed_by=? WHERE id=?`)
-    .run(out_trade_no || null, Date.now(), req.user.id, w.id);
-  // 从冻结余额扣除（消耗 locked）
+    .run(actualTradeNo, Date.now(), req.user.id, w.id);
   balance.consume(w.user_id, w.amount, {
     type: 'withdraw_paid',
     ref_type: 'withdrawal',
     ref_id: w.id,
-    note: out_trade_no ? `提现已打款 ${out_trade_no}` : '提现已打款',
+    note: actualTradeNo ? `提现已打款 ${actualTradeNo}` : '提现已打款',
   });
-  notify(w.user_id, 'withdraw_paid', '提现已到账',
-    `您的 ${w.amount} 元提现已打款${out_trade_no ? '（流水号 ' + out_trade_no + '）' : ''}`, w.id);
-  res.json({ ok: true });
+  notify(w.user_id, 'withdraw_paid', '提现处理完成',
+    `您的 ${w.amount} 元提现平台已处理${actualTradeNo ? '（流水号 ' + actualTradeNo + '）' : ''}，资金通常 1-3 个工作日到账`, w.id);
+  res.json({ ok: true, note: transferNote });
 });
 
 module.exports = router;
