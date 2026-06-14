@@ -1,7 +1,8 @@
 const express = require('express');
 const db = require('../db');
 const { authRequired, roleRequired } = require('../middleware/auth');
-const { placeBidTx, triggerAutoBids } = require('../services/auction');
+const { placeBidTx, triggerAutoBids, lockDepositForResource } = require('../services/auction');
+const balance = require('../services/balance');
 
 const router = express.Router();
 
@@ -13,6 +14,15 @@ router.post('/', authRequired, (req, res) => {
   const isSupply = (r.kind || 'supply') === 'supply';
   if (isSupply && req.user.role !== 'buyer') return res.status(403).json({ error: '货源仅限采购商出价' });
   if (!isSupply && req.user.role !== 'farm') return res.status(403).json({ error: '求购仅限养殖场应标' });
+  // 首次出价：自动从钱包冻结一笔竞拍保证金
+  try {
+    lockDepositForResource({ userId: req.user.id, resourceId: Number(resource_id), type: 'buyer_bid' });
+  } catch (e) {
+    if (e.code === 'INSUFFICIENT_BALANCE') {
+      return res.status(402).json({ error: e.message, code: 'INSUFFICIENT_BALANCE', required: e.required, available: e.available });
+    }
+    return res.status(500).json({ error: e.message });
+  }
   try {
     const updated = placeBidTx(Number(resource_id), req.user.id, Number(price), 0, null);
     res.json({ ok: true, resource: updated });
@@ -28,8 +38,15 @@ router.post('/auto', authRequired, roleRequired('buyer'), (req, res) => {
   if (!r) return res.status(404).json({ error: '资源不存在' });
   if (r.status !== 'auctioning') return res.status(400).json({ error: '竞拍未进行中' });
   if ((r.kind || 'supply') !== 'supply') return res.status(400).json({ error: '求购暂不支持自动出价' });
-  const buyerDep = db.prepare(`SELECT * FROM deposits WHERE user_id=? AND type='buyer_bid' AND resource_id=? AND status IN ('available','frozen')`).get(req.user.id, resource_id);
-  if (!buyerDep) return res.status(403).json({ error: '请先为该竞拍缴纳保证金' });
+  // 自动出价前也确保保证金已冻结
+  try {
+    lockDepositForResource({ userId: req.user.id, resourceId: Number(resource_id), type: 'buyer_bid' });
+  } catch (e) {
+    if (e.code === 'INSUFFICIENT_BALANCE') {
+      return res.status(402).json({ error: e.message, code: 'INSUFFICIENT_BALANCE', required: e.required, available: e.available });
+    }
+    return res.status(500).json({ error: e.message });
+  }
 
   db.prepare(`
     INSERT INTO auto_bids (resource_id, bidder_id, max_price, active, created_at)

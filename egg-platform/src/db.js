@@ -241,6 +241,8 @@ CREATE INDEX IF NOT EXISTS idx_withdrawals_user ON withdrawals(user_id, applied_
 CREATE INDEX IF NOT EXISTS idx_withdrawals_status ON withdrawals(status, applied_at DESC);
 `);
 addColumnIfMissing('deposits', 'resource_id', 'resource_id INTEGER');
+addColumnIfMissing('deposits', 'from_balance', 'from_balance INTEGER NOT NULL DEFAULT 0');  // 1=新模型（钱包冻结）；0=旧模型（微信支付）
+addColumnIfMissing('pay_orders', 'purpose', "purpose TEXT NOT NULL DEFAULT 'deposit'");      // deposit / recharge
 
 // 一次性迁移：让 deposits.type 允许 'demand_quality'（SQLite 不支持 ALTER CHECK，只能重建表）
 (function ensureDepositTypeCheck() {

@@ -202,10 +202,13 @@ router.put('/notice-settings', (req, res) => {
   res.json({ ok: true, settings: settings.getAll() });
 });
 
-// ===== 保证金金额设置 =====
+// ===== 保证金 / 服务费金额设置 =====
 router.get('/deposit-settings', (req, res) => {
   const s = settings.getAll();
   res.json({
+    deposit_amount: s.deposit_amount,
+    service_fee_amount: s.service_fee_amount,
+    // 旧档位制（兼容旧后台 UI）
     deposit_step_qty: s.deposit_step_qty,
     deposit_supply_per_step: s.deposit_supply_per_step,
     deposit_demand_per_step: s.deposit_demand_per_step,
@@ -214,17 +217,19 @@ router.get('/deposit-settings', (req, res) => {
 });
 
 router.put('/deposit-settings', (req, res) => {
-  const fields = ['deposit_step_qty', 'deposit_supply_per_step', 'deposit_demand_per_step', 'deposit_bid_per_step'];
+  const fields = ['deposit_amount', 'service_fee_amount', 'deposit_step_qty', 'deposit_supply_per_step', 'deposit_demand_per_step', 'deposit_bid_per_step'];
   for (const f of fields) {
     if (req.body[f] !== undefined) {
       const n = Number(req.body[f]);
-      if (!(n > 0)) return res.status(400).json({ error: `${f} 必须为正数` });
+      if (!(n >= 0)) return res.status(400).json({ error: `${f} 必须为非负数` });
       settings.set(f, n);
     }
   }
   const s = settings.getAll();
   res.json({
     ok: true,
+    deposit_amount: s.deposit_amount,
+    service_fee_amount: s.service_fee_amount,
     deposit_step_qty: s.deposit_step_qty,
     deposit_supply_per_step: s.deposit_supply_per_step,
     deposit_demand_per_step: s.deposit_demand_per_step,

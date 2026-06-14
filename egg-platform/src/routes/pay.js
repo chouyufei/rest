@@ -3,6 +3,7 @@ const db = require('../db');
 const { authRequired } = require('../middleware/auth');
 const { notify } = require('../services/notification');
 const { computeDepositAmount } = require('../services/auction');
+const balance = require('../services/balance');
 
 const router = express.Router();
 
@@ -137,6 +138,68 @@ router.post('/create-order', authRequired, async (req, res) => {
   }
 });
 
+// 钱包充值：用户输入金额 → 创建 pay_order(purpose=recharge) → 调起微信支付
+router.post('/recharge', authRequired, async (req, res) => {
+  const amount = Number(req.body.amount);
+  if (!(amount >= 1)) return res.status(400).json({ error: '充值金额至少 1 元' });
+  if (amount > 50000) return res.status(400).json({ error: '单笔充值上限 50000 元' });
+
+  if (!isLive) {
+    // 演示模式：直接入账
+    const orderNo = 'DEMO_RC' + Date.now() + Math.floor(Math.random() * 1000);
+    const info = db.prepare(`
+      INSERT INTO pay_orders (out_trade_no, user_id, deposit_type, amount, status, purpose, paid_at, created_at)
+      VALUES (?, ?, 'recharge', ?, 'paid', 'recharge', ?, ?)
+    `).run(orderNo, req.user.id, amount, Date.now(), Date.now());
+    balance.credit(req.user.id, amount, {
+      type: 'recharge',
+      ref_type: 'pay_order',
+      ref_id: info.lastInsertRowid,
+      note: `演示充值 ${orderNo}`,
+    });
+    return res.json({ ok: true, demo: true, out_trade_no: orderNo, message: `[演示] 已充值 ${amount} 元到钱包` });
+  }
+
+  if (!req.user.wechat_openid) {
+    return res.status(400).json({ error: '需用微信登录后才能充值' });
+  }
+
+  const outTradeNo = 'EGGRC' + Date.now() + req.user.id;
+  const totalFen = Math.round(amount * 100);
+  db.prepare(`
+    INSERT INTO pay_orders (out_trade_no, user_id, deposit_type, amount, status, purpose, created_at)
+    VALUES (?, ?, 'recharge', ?, 'pending', 'recharge', ?)
+  `).run(outTradeNo, req.user.id, amount, Date.now());
+
+  try {
+    const result = await pay.transactions_jsapi({
+      description: `凤伯乐钱包充值 ${amount} 元`,
+      out_trade_no: outTradeNo,
+      notify_url: WECHAT_NOTIFY_URL,
+      amount: { total: totalFen, currency: 'CNY' },
+      payer: { openid: req.user.wechat_openid },
+    });
+    if (result.status !== 200 || !result.data || !result.data.paySign) {
+      db.prepare(`UPDATE pay_orders SET status='cancelled' WHERE out_trade_no=?`).run(outTradeNo);
+      const errMsg = (result.error && (result.error.message || result.error.code)) || ('HTTP ' + result.status);
+      return res.status(400).json({ error: '微信下单失败: ' + errMsg });
+    }
+    const p = result.data;
+    res.json({
+      ok: true,
+      timeStamp: p.timeStamp,
+      nonceStr: p.nonceStr,
+      package: p.package,
+      signType: p.signType || 'RSA',
+      paySign: p.paySign,
+      out_trade_no: outTradeNo,
+    });
+  } catch (e) {
+    db.prepare(`UPDATE pay_orders SET status='cancelled' WHERE out_trade_no=?`).run(outTradeNo);
+    res.status(500).json({ error: '微信下单异常: ' + (e.message || String(e)) });
+  }
+});
+
 router.post('/notify', async (req, res) => {
   if (!pay) return res.status(503).json({ code: 'FAIL', message: '支付未启用' });
 
@@ -221,6 +284,23 @@ function fulfillOrder(order, transactionId) {
   const tx = db.transaction(() => {
     db.prepare(`UPDATE pay_orders SET status='paid', transaction_id=?, paid_at=? WHERE id=? AND status='pending'`)
       .run(transactionId, now, order.id);
+
+    if (order.purpose === 'recharge') {
+      // 充值：直接入账钱包
+      // dedup：同一 pay_order 不重复 credit
+      const dup = db.prepare(`SELECT id FROM balance_transactions WHERE type='recharge' AND ref_type='pay_order' AND ref_id=?`).get(order.id);
+      if (!dup) {
+        balance.credit(order.user_id, order.amount, {
+          type: 'recharge',
+          ref_type: 'pay_order',
+          ref_id: order.id,
+          note: `微信充值 ${transactionId}`,
+        });
+      }
+      return;
+    }
+
+    // 旧的"按保证金支付"分支（向后兼容）
     const exists = order.deposit_type === 'farm_quality'
       ? db.prepare(`SELECT id FROM deposits WHERE user_id=? AND type='farm_quality' AND status IN ('available','frozen')`).get(order.user_id)
       : db.prepare(`SELECT id FROM deposits WHERE user_id=? AND type='buyer_bid' AND resource_id=? AND status IN ('available','frozen')`).get(order.user_id, order.resource_id);
@@ -233,8 +313,13 @@ function fulfillOrder(order, transactionId) {
     }
   });
   tx();
-  notify(order.user_id, 'deposit_paid', '保证金已缴纳',
-    `${order.deposit_type === 'farm_quality' ? '品质' : '竞拍'}保证金 ${order.amount} 元已通过微信支付完成`, null);
+  if (order.purpose === 'recharge') {
+    notify(order.user_id, 'recharge_paid', '充值成功',
+      `${order.amount} 元已到账钱包余额`, null);
+  } else {
+    notify(order.user_id, 'deposit_paid', '保证金已缴纳',
+      `${order.deposit_type === 'farm_quality' ? '品质' : '竞拍'}保证金 ${order.amount} 元已通过微信支付完成`, null);
+  }
 }
 
 module.exports = router;

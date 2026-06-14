@@ -1,7 +1,8 @@
 const express = require('express');
 const db = require('../db');
 const { authRequired, roleRequired } = require('../middleware/auth');
-const { closeAuction, sweep, computeDepositAmount, releaseResourceDeposits } = require('../services/auction');
+const { closeAuction, sweep, computeDepositAmount, releaseResourceDeposits, lockDepositForResource } = require('../services/auction');
+const balance = require('../services/balance');
 const { distanceKm } = require('../services/geo');
 
 const NEAR_RADIUS_KM = 500;  // 推荐"附近"范围
@@ -148,30 +149,24 @@ router.post('/', authRequired, (req, res) => {
   const kind = req.body.kind === 'demand' ? 'demand' : 'supply';
   const qtyNum = Number(req.body.quantity) || 1;
 
-  // 货源 / 求购保证金为账户级共用：金额够当前 qty 档位即可，不再独占绑定到资源。
-  // 这样用户一笔保证金可覆盖多个同档位的发布，避免微信"重复支付"提醒。
-  let depositRow = null;
+  // 角色 / 资质校验（保证金在资源创建后从钱包冻结，下面 lockDepositForResource）
   if (kind === 'supply') {
     if (req.user.role !== 'farm') return res.status(403).json({ error: '货源仅限养殖场发布' });
     if (req.user.license_status !== 'approved') return res.status(403).json({ error: '请先完成资质审核' });
-    const need = computeDepositAmount('farm_quality', qtyNum);
-    depositRow = db.prepare(`
-      SELECT * FROM deposits
-      WHERE user_id=? AND type='farm_quality' AND status IN ('available','frozen')
-        AND amount >= ?
-      ORDER BY amount DESC, paid_at DESC LIMIT 1
-    `).get(req.user.id, need);
-    if (!depositRow) return res.status(403).json({ error: `请先缴纳 ${need} 元品质保证金` });
   } else {
     if (req.user.role !== 'buyer') return res.status(403).json({ error: '求购仅限采购商发布' });
-    const need = computeDepositAmount('demand_quality', qtyNum);
-    depositRow = db.prepare(`
-      SELECT * FROM deposits
-      WHERE user_id=? AND type='demand_quality' AND status IN ('available','frozen')
-        AND amount >= ?
-      ORDER BY amount DESC, paid_at DESC LIMIT 1
-    `).get(req.user.id, need);
-    if (!depositRow) return res.status(403).json({ error: `请先缴纳 ${need} 元求购保证金` });
+  }
+  // 预检：可用余额够不够一笔保证金
+  const needAmount = computeDepositAmount();
+  const wallet = balance.getBalance(req.user.id);
+  if (wallet.available < needAmount) {
+    return res.status(402).json({
+      error: `钱包可用余额不足，需冻结 ${needAmount} 元，当前可用 ${wallet.available.toFixed(2)} 元`,
+      code: 'INSUFFICIENT_BALANCE',
+      required: needAmount,
+      available: wallet.available,
+      short: needAmount - wallet.available,
+    });
   }
 
   const {
@@ -216,8 +211,21 @@ router.post('/', authRequired, (req, res) => {
     snapLat, snapLng,
   );
 
-  // 货源 / 求购保证金不再绑定到资源，账户级共用。竞拍保证金 (buyer_bid)
-  // 仍按 resource_id 绑定 + 竞拍结束时释放（见 services/auction）
+  // 资源创建好后，从钱包冻结一笔保证金锁到该资源（订单完成时扣服务费 / 取消时解冻）
+  try {
+    lockDepositForResource({
+      userId: req.user.id,
+      resourceId: info.lastInsertRowid,
+      type: kind === 'supply' ? 'farm_quality' : 'demand_quality',
+    });
+  } catch (e) {
+    // 极小概率：余额刚好在 precheck 后被花掉。回滚资源
+    db.prepare('DELETE FROM resources WHERE id=?').run(info.lastInsertRowid);
+    if (e.code === 'INSUFFICIENT_BALANCE') {
+      return res.status(402).json({ error: e.message, code: 'INSUFFICIENT_BALANCE' });
+    }
+    return res.status(500).json({ error: e.message });
+  }
 
   const r = db.prepare('SELECT * FROM resources WHERE id=?').get(info.lastInsertRowid);
   res.json({ resource: enrich(r) });

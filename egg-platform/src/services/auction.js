@@ -23,7 +23,97 @@ function releaseAndCredit(whereClause, ...params) {
 
 // 释放某个资源相关的所有保证金（取消 / 流拍 / 结束竞拍场景的便捷入口）
 function releaseResourceDeposits(resourceId) {
-  return releaseAndCredit(`resource_id=?`, resourceId);
+  // 新模型（from_balance=1）：解冻回钱包可用余额
+  const newOnes = db.prepare(`
+    SELECT * FROM deposits
+    WHERE resource_id=? AND status='frozen' AND from_balance=1
+  `).all(resourceId);
+  for (const dep of newOnes) {
+    db.prepare(`UPDATE deposits SET status='released', released_at=? WHERE id=?`).run(Date.now(), dep.id);
+    const dup = db.prepare(`SELECT id FROM balance_transactions WHERE type='deposit_unlock' AND ref_type='deposit' AND ref_id=?`).get(dep.id);
+    if (dup) continue;
+    balance.unlock(dep.user_id, dep.amount, {
+      type: 'deposit_unlock',
+      ref_type: 'deposit',
+      ref_id: dep.id,
+      note: `保证金解冻 #${dep.id}`,
+    });
+  }
+  // 旧模型（from WeChat Pay）：旧逻辑——release 入账钱包
+  return newOnes.length + releaseAndCredit(`resource_id=? AND COALESCE(from_balance,0)=0`, resourceId);
+}
+
+// 锁定一笔保证金到资源上：从用户钱包可用余额扣到冻结部分，并写 deposits 行。
+// 同一用户对同一资源已有 frozen 保证金 → 直接返回该行（幂等）
+// 余额不足 → 抛 "INSUFFICIENT_BALANCE" 错误，前端弹"去充值"
+function lockDepositForResource({ userId, resourceId, type }) {
+  const existing = db.prepare(`
+    SELECT * FROM deposits
+    WHERE user_id=? AND resource_id=? AND type=? AND status IN ('available','frozen')
+  `).get(userId, resourceId, type);
+  if (existing) return existing;
+
+  const amount = computeDepositAmount();
+  const { available } = balance.getBalance(userId);
+  if (available < amount) {
+    const e = new Error(`钱包可用余额不足，需 ${amount} 元，当前可用 ${available.toFixed(2)} 元`);
+    e.code = 'INSUFFICIENT_BALANCE';
+    e.required = amount;
+    e.available = available;
+    throw e;
+  }
+
+  const now = Date.now();
+  const info = db.prepare(`
+    INSERT INTO deposits (user_id, type, amount, status, resource_id, note, paid_at, from_balance)
+    VALUES (?, ?, ?, 'frozen', ?, ?, ?, 1)
+  `).run(userId, type, amount, resourceId, `钱包冻结 · 资源 #${resourceId}`, now);
+
+  balance.lock(userId, amount, {
+    type: 'deposit_lock',
+    ref_type: 'deposit',
+    ref_id: info.lastInsertRowid,
+    note: `冻结保证金 · 资源 #${resourceId}`,
+  });
+
+  return db.prepare('SELECT * FROM deposits WHERE id=?').get(info.lastInsertRowid);
+}
+
+// 订单完成时：从买卖双方各扣一笔服务费，剩余解冻
+function settleOrderDeposits(orderId) {
+  const order = db.prepare('SELECT * FROM orders WHERE id=?').get(orderId);
+  if (!order) return;
+  const fee = computeServiceFee();
+  const now = Date.now();
+  // 找该资源上仍冻结的、来自钱包的保证金
+  const rows = db.prepare(`
+    SELECT * FROM deposits WHERE resource_id=? AND status='frozen' AND from_balance=1
+  `).all(order.resource_id);
+  for (const dep of rows) {
+    // 去重：已结算过则跳过
+    const dup = db.prepare(`SELECT id FROM balance_transactions WHERE type='service_fee' AND ref_type='deposit' AND ref_id=?`).get(dep.id);
+    if (dup) continue;
+    const actualFee = Math.min(fee, dep.amount);
+    if (actualFee > 0) {
+      balance.consume(dep.user_id, actualFee, {
+        type: 'service_fee',
+        ref_type: 'order',
+        ref_id: order.id,
+        note: `订单 #${order.id} 服务费`,
+      });
+    }
+    const rest = dep.amount - actualFee;
+    if (rest > 0) {
+      balance.unlock(dep.user_id, rest, {
+        type: 'deposit_unlock',
+        ref_type: 'order',
+        ref_id: order.id,
+        note: `订单 #${order.id} 保证金解冻`,
+      });
+    }
+    db.prepare(`UPDATE deposits SET status='deducted', released_at=?, note=? WHERE id=?`)
+      .run(now, `已扣服务费 ${actualFee} 元，余 ${rest} 元解冻`, dep.id);
+  }
 }
 
 // 一次性数据补救：把所有"应已释放但未入账"的历史保证金，统一补释放 + 入账。
@@ -61,19 +151,13 @@ const {
 
 const ANTI_SNIPE_WINDOW_MS = 5 * 60 * 1000; // 最后一次出价后静默此时长即成交
 
-// 保证金金额计算：根据 type + 数量(车数) + 后台配置档位
-// amount = ceil(qty / step_qty) * per_step
-// 例：默认 step_qty=2，supply=2000：1车→2000，2车→2000，3车→4000，5车→6000
-const TYPE_TO_KEY = {
-  farm_quality: 'deposit_supply_per_step',
-  demand_quality: 'deposit_demand_per_step',
-  buyer_bid: 'deposit_bid_per_step',
-};
-function computeDepositAmount(type, qty) {
-  const perStep = Number(settings.get(TYPE_TO_KEY[type])) || 0;
-  const stepQty = Math.max(1, Number(settings.get('deposit_step_qty')) || 2);
-  const q = Math.max(1, Number(qty) || 1);
-  return Math.ceil(q / stepQty) * perStep;
+// 统一保证金：所有三类（发布货源 / 发起求购 / 参与竞拍）固定一笔，
+// 后台 settings.deposit_amount 可改。原签名 (type, qty) 保留兼容旧调用点。
+function computeDepositAmount(/* type, qty */) {
+  return Number(settings.get('deposit_amount')) || 0;
+}
+function computeServiceFee() {
+  return Number(settings.get('service_fee_amount')) || 0;
 }
 
 function getResource(id) {
@@ -259,6 +343,9 @@ module.exports = {
   releaseDeposits,
   resourceDeposit,
   computeDepositAmount,
+  computeServiceFee,
+  lockDepositForResource,
+  settleOrderDeposits,
   releaseResourceDeposits,
   reconcileLegacyDeposits,
   ANTI_SNIPE_WINDOW_MS,
