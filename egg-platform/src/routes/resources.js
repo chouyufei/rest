@@ -180,7 +180,7 @@ router.post('/', authRequired, (req, res) => {
   }
   const dh = Number(duration_hours);
   if (![1, 2, 3].includes(dh)) return res.status(400).json({ error: '竞拍时长仅支持 1/2/3 小时' });
-  const inc = Number(min_increment) || 2;
+  const inc = Number(min_increment) || 1;
   if (inc < 0.5) return res.status(400).json({ error: '加价/降价幅度不能低于 0.5 元' });
 
   const now = Date.now();
