@@ -10,8 +10,8 @@ const router = express.Router();
 function enrich(o) {
   if (!o) return o;
   const resource = db.prepare('SELECT * FROM resources WHERE id=?').get(o.resource_id);
-  const farm = db.prepare('SELECT id, name, phone, region FROM users WHERE id=?').get(o.farm_id);
-  const buyer = db.prepare('SELECT id, name, phone, region FROM users WHERE id=?').get(o.buyer_id);
+  const farm = db.prepare('SELECT id, name, phone, region, lat, lng FROM users WHERE id=?').get(o.farm_id);
+  const buyer = db.prepare('SELECT id, name, phone, region, lat, lng FROM users WHERE id=?').get(o.buyer_id);
   return {
     ...o,
     resource: resource ? { ...resource, photos: resource.photos ? JSON.parse(resource.photos) : [] } : null,
