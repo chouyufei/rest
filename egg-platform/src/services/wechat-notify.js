@@ -80,7 +80,16 @@ async function send(openid, scenario, resourceTitle, page) {
 }
 
 function templatesPublic() {
-  return { auction: TEMPLATE_ID || null };
+  // 单模板 + 多场景：所有场景共用同一个 TEMPLATE_ID，但前端 requestSubscribe
+  // 时仍按场景名 (order_received / auction_won / auction_lost) 调用，
+  // 这里把同一个 ID 映射到所有场景 key，避免前端查不到模板而跳过授权弹窗
+  const tpl = TEMPLATE_ID || null;
+  return {
+    auction:        tpl,
+    auction_won:    tpl,
+    auction_lost:   tpl,
+    order_received: tpl,
+  };
 }
 
 module.exports = { send, templatesPublic, isLive };
