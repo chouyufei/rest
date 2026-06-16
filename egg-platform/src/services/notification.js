@@ -32,9 +32,9 @@ function dispatchUserChannels(user, scenario, resourceTitle, resourceId, isSelle
 
 function wechatResultText(scenario) {
   return ({
-    buyer_won: '货源竞拍成功',
-    buyer_lost: '货源竞拍失败',
-    seller: '您的货源已被成功竞拍',
+    buyer_won: '货源竞价成功',
+    buyer_lost: '货源竞价失败',
+    seller: '您的货源已被成功竞价',
   }[scenario]) || scenario;
 }
 
@@ -44,7 +44,7 @@ function dispatchPlatformChannels(resource, seller, buyer, finalPrice) {
   const buyerInfo  = `${buyer.name  || '未填名'} / 微信:${buyer.wechat_openid  ? buyer.wechat_openid.slice(0, 8)  + '…' : '无'} / ${buyer.phone  || '无'}`;
 
   const wecomText = [
-    '【凤伯乐·竞拍成交】',
+    '【凤伯乐·竞价成交】',
     `货源：${resource.title}`,
     `成交价：¥${finalPrice}`,
     `卖方：${sellerInfo}`,
@@ -60,10 +60,10 @@ function dispatchPlatformChannels(resource, seller, buyer, finalPrice) {
   }
 }
 
-// 场景 1：买家竞拍成功（中标）
+// 场景 1：买家竞价成功（中标）
 function notifyAuctionWon(userId, resource, price) {
   const u = getUser(userId); if (!u) return;
-  notify(u.id, 'auction_won', '🎉 竞拍成功',
+  notify(u.id, 'auction_won', '🎉 竞价成功',
     `恭喜！您以 ${price} 元拍下「${resource.title}」`, resource.id);
   dispatchUserChannels(u, 'buyer_won', resource.title, resource.id, false);
 }
@@ -82,7 +82,7 @@ function notifyAuctionLost(userId, resource, finalPrice) {
 // 场景 3：发布方收到订单（货被拍下）
 function notifyOrderReceived(userId, resource, finalPrice, isSupply) {
   const u = getUser(userId); if (!u) return;
-  notify(u.id, 'order_received', '🎉 您的货源已被竞拍成功',
+  notify(u.id, 'order_received', '🎉 您的货源已被竞价成功',
     `「${resource.title}」已以 ${finalPrice} 元成交`, resource.id);
   dispatchUserChannels(u, 'seller', resource.title, resource.id, true);
 }
@@ -122,7 +122,7 @@ function notifyOrderGroupReady(orderId, buyerId, sellerId, resource) {
   } catch (e) {}
 }
 
-// 场景：竞拍成交时通知平台方（企业微信 + 平台短信）
+// 场景：竞价成交时通知平台方（企业微信 + 平台短信）
 function notifyPlatformOnDeal(resource, sellerId, buyerId, finalPrice) {
   const seller = getUser(sellerId);
   const buyer = getUser(buyerId);

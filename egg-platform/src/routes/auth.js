@@ -49,6 +49,14 @@ router.get('/notice-templates', (req, res) => {
   });
 });
 
+// 公开的小程序运行时配置（前端 onLaunch 拉一次）
+router.get('/app-config', (req, res) => {
+  const settings = require('../services/settings');
+  res.json({
+    review_mode: !!settings.get('review_mode'),
+  });
+});
+
 router.post('/send-otp', async (req, res) => {
   const { phone } = req.body;
   if (!phone || !/^1\d{10}$/.test(phone)) return res.status(400).json({ error: '手机号格式错误' });

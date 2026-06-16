@@ -14,7 +14,7 @@ router.post('/', authRequired, (req, res) => {
   const isSupply = (r.kind || 'supply') === 'supply';
   if (isSupply && req.user.role !== 'buyer') return res.status(403).json({ error: '货源仅限采购商出价' });
   if (!isSupply && req.user.role !== 'farm') return res.status(403).json({ error: '求购仅限养殖场应标' });
-  // 首次出价：自动从钱包冻结一笔竞拍保证金
+  // 首次出价：自动从钱包冻结一笔竞价保证金
   try {
     lockDepositForResource({ userId: req.user.id, resourceId: Number(resource_id), type: 'buyer_bid' });
   } catch (e) {
@@ -36,7 +36,7 @@ router.post('/auto', authRequired, roleRequired('buyer'), (req, res) => {
   if (!resource_id || !max_price) return res.status(400).json({ error: '缺少参数' });
   const r = db.prepare('SELECT * FROM resources WHERE id=?').get(resource_id);
   if (!r) return res.status(404).json({ error: '资源不存在' });
-  if (r.status !== 'auctioning') return res.status(400).json({ error: '竞拍未进行中' });
+  if (r.status !== 'auctioning') return res.status(400).json({ error: '竞价未进行中' });
   if ((r.kind || 'supply') !== 'supply') return res.status(400).json({ error: '求购暂不支持自动出价' });
   // 自动出价前也确保保证金已冻结
   try {

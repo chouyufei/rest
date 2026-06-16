@@ -14,13 +14,17 @@ const DEFAULTS = {
   deposit_demand_per_step: 1000,
   deposit_bid_per_step: 1000,
 
-  // 新统一保证金机制：发布货源 / 发起求购 / 参与竞拍，统一冻结同一额度。来自钱包余额。
+  // 新统一保证金机制：发布货源 / 发起求购 / 参与竞价，统一冻结同一额度。来自钱包余额。
   deposit_amount: 1000,                   // 统一保证金额度（元）
   service_fee_amount: 50,                 // 订单完成时平台从每一方扣除的服务费（元）
 
   // 企业微信服务二维码：成交后下发给买卖双方扫码加好友
   service_qr_url: '',                     // 图片 URL（管理员上传后保存）
   service_qr_owner: '凤伯乐 · 客服',       // 二维码归属人/部门名
+
+  // 「审核模式」总开关：提交微信审核时打开，藏起所有金融 / 复杂功能，
+  // 审核员只看简化版（浏览货源 + 文字咨询）。审核通过后再关。
+  review_mode: false,
 };
 
 function get(key) {

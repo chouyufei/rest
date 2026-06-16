@@ -256,6 +256,16 @@ router.put('/service-qr', (req, res) => {
   });
 });
 
+// ===== 审核模式总开关 =====
+router.get('/review-mode', (req, res) => {
+  res.json({ review_mode: !!settings.get('review_mode') });
+});
+router.put('/review-mode', (req, res) => {
+  const v = !!req.body.review_mode;
+  settings.set('review_mode', v);
+  res.json({ ok: true, review_mode: v });
+});
+
 // ===== 提现审核 =====
 const balance = require('../services/balance');
 const { reconcileLegacyDeposits } = require('../services/auction');

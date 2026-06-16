@@ -66,7 +66,7 @@ router.post('/create-order', authRequired, async (req, res) => {
     return res.status(403).json({ error: '请先完成资质审核' });
   }
   if (type === 'demand_quality' && req.user.role !== 'buyer') return res.status(403).json({ error: '仅采购商需缴纳求购保证金' });
-  if (type === 'buyer_bid' && !resourceId) return res.status(400).json({ error: '竞拍保证金需指定货源' });
+  if (type === 'buyer_bid' && !resourceId) return res.status(400).json({ error: '竞价保证金需指定货源' });
 
   const amount = computeDepositAmount(type, type === 'buyer_bid'
     ? (db.prepare('SELECT quantity FROM resources WHERE id=?').get(resourceId)?.quantity || qty)
@@ -74,7 +74,7 @@ router.post('/create-order', authRequired, async (req, res) => {
 
   // 查找已有可复用的保证金：
   //   - 货源/求购：账户级共用，金额 ≥ 本次需缴即可（不再要求 resource_id IS NULL）
-  //   - 竞拍：按 resource_id 绑定，每场单独
+  //   - 竞价：按 resource_id 绑定，每场单独
   const existing = type === 'buyer_bid'
     ? db.prepare(`SELECT * FROM deposits WHERE user_id=? AND type='buyer_bid' AND resource_id=? AND status IN ('available','frozen')`).get(req.user.id, resourceId)
     : db.prepare(`SELECT * FROM deposits WHERE user_id=? AND type=? AND amount>=? AND status IN ('available','frozen') ORDER BY amount DESC, paid_at DESC LIMIT 1`).get(req.user.id, type, amount);
@@ -105,7 +105,7 @@ router.post('/create-order', authRequired, async (req, res) => {
 
   try {
     const result = await pay.transactions_jsapi({
-      description: `凤伯乐${type === 'farm_quality' ? '品质' : '竞拍'}保证金`,
+      description: `凤伯乐${type === 'farm_quality' ? '品质' : '竞价'}保证金`,
       out_trade_no: outTradeNo,
       notify_url: WECHAT_NOTIFY_URL,
       amount: { total: totalFen, currency: 'CNY' },
@@ -318,7 +318,7 @@ function fulfillOrder(order, transactionId) {
       `${order.amount} 元已到账钱包余额`, null);
   } else {
     notify(order.user_id, 'deposit_paid', '保证金已缴纳',
-      `${order.deposit_type === 'farm_quality' ? '品质' : '竞拍'}保证金 ${order.amount} 元已通过微信支付完成`, null);
+      `${order.deposit_type === 'farm_quality' ? '品质' : '竞价'}保证金 ${order.amount} 元已通过微信支付完成`, null);
   }
 }
 
