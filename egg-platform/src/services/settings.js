@@ -14,7 +14,7 @@ const DEFAULTS = {
   deposit_demand_per_step: 1000,
   deposit_bid_per_step: 1000,
 
-  // 新统一保证金机制：发布货源 / 发起求购 / 参与竞价，统一冻结同一额度。来自钱包余额。
+  // 新统一保证金机制：发布货源 / 发起求购 / 参与报价，统一冻结同一额度。来自钱包余额。
   deposit_amount: 1000,                   // 统一保证金额度（元）
   service_fee_amount: 50,                 // 订单完成时平台从每一方扣除的服务费（元）
 

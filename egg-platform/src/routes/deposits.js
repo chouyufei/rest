@@ -36,7 +36,7 @@ router.get('/status', authRequired, (req, res) => {
   });
 });
 
-// 手动锁定一笔保证金到指定资源（主要给"先出价 / 应标"等场景用）
+// 手动锁定一笔保证金到指定资源（主要给"先报价 / 应标"等场景用）
 // 发布货源 / 求购的锁定在 /resources POST 内部自动完成，前端不必单独调用
 router.post('/lock', authRequired, (req, res) => {
   const { type, resource_id } = req.body;
@@ -68,7 +68,7 @@ router.post('/refund/:id', authRequired, (req, res) => {
   if (!dep) return res.status(404).json({ error: '保证金不存在' });
   if (dep.status !== 'available') return res.status(400).json({ error: '保证金当前不可退还' });
   if (dep.type === 'buyer_bid' && dep.resource_id) {
-    return res.status(400).json({ error: '已绑定到货源的竞价保证金需待竞价结束后释放' });
+    return res.status(400).json({ error: '已绑定到货源的履约保证金需待报价结束后释放' });
   }
   db.prepare(`UPDATE deposits SET status='released', released_at=? WHERE id=?`).run(Date.now(), dep.id);
   balance.credit(req.user.id, dep.amount, {

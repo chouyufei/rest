@@ -176,10 +176,10 @@ router.post('/', authRequired, (req, res) => {
   } = req.body;
 
   if (!title || !start_price || !quantity || !duration_hours) {
-    return res.status(400).json({ error: '请填写必填项：标题/起拍价/数量/竞价时长' });
+    return res.status(400).json({ error: '请填写必填项：标题/起拍价/数量/报价时长' });
   }
   const dh = Number(duration_hours);
-  if (![1, 2, 3].includes(dh)) return res.status(400).json({ error: '竞价时长仅支持 1/2/3 小时' });
+  if (![1, 2, 3].includes(dh)) return res.status(400).json({ error: '报价时长仅支持 1/2/3 小时' });
   const inc = Number(min_increment) || 1;
   if (inc < 0.5) return res.status(400).json({ error: '加价/降价幅度不能低于 0.5 元' });
 
@@ -235,9 +235,9 @@ router.patch('/:id', authRequired, (req, res) => {
   const r = db.prepare('SELECT * FROM resources WHERE id=?').get(req.params.id);
   if (!r) return res.status(404).json({ error: '资源不存在' });
   if (r.farm_id !== req.user.id) return res.status(403).json({ error: '只能修改自己的资源' });
-  if (r.status !== 'auctioning') return res.status(400).json({ error: '只能在竞价中修改' });
+  if (r.status !== 'auctioning') return res.status(400).json({ error: '只能在报价中修改' });
   const bidCount = db.prepare('SELECT COUNT(*) c FROM bids WHERE resource_id=?').get(r.id).c;
-  if (bidCount > 0) return res.status(400).json({ error: '已有出价，无法修改' });
+  if (bidCount > 0) return res.status(400).json({ error: '已有报价，无法修改' });
 
   const { description, photos } = req.body;
   db.prepare('UPDATE resources SET description=COALESCE(?,description), photos=COALESCE(?,photos) WHERE id=?')
@@ -250,7 +250,7 @@ router.post('/:id/cancel', authRequired, (req, res) => {
   if (!r) return res.status(404).json({ error: '资源不存在' });
   if (r.farm_id !== req.user.id) return res.status(403).json({ error: '只能操作自己的资源' });
   const bidCount = db.prepare('SELECT COUNT(*) c FROM bids WHERE resource_id=?').get(r.id).c;
-  if (bidCount > 0) return res.status(400).json({ error: '已有出价，无法取消' });
+  if (bidCount > 0) return res.status(400).json({ error: '已有报价，无法取消' });
   db.prepare(`UPDATE resources SET status='cancelled' WHERE id=?`).run(r.id);
   // 释放本资源所有保证金 → 入用户余额
   releaseResourceDeposits(r.id);
@@ -261,8 +261,8 @@ router.post('/:id/end-now', authRequired, (req, res) => {
   const r = db.prepare('SELECT * FROM resources WHERE id=?').get(req.params.id);
   if (!r) return res.status(404).json({ error: '资源不存在' });
   if (r.farm_id !== req.user.id) return res.status(403).json({ error: '只能操作自己发布的资源' });
-  if (r.status !== 'auctioning') return res.status(400).json({ error: '竞价未进行中' });
-  if (!r.current_bidder_id) return res.status(400).json({ error: '还没有人出价，无法成交' });
+  if (r.status !== 'auctioning') return res.status(400).json({ error: '报价未进行中' });
+  if (!r.current_bidder_id) return res.status(400).json({ error: '还没有人报价，无法成交' });
   closeAuction(r.id, true);
   const updated = db.prepare('SELECT * FROM resources WHERE id=?').get(r.id);
   res.json({ ok: true, resource: updated });

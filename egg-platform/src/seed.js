@@ -26,7 +26,7 @@ function seed() {
     .run('13900000003', '上海蛋品贸易', '上海', now);
 
   const { FARM_DEPOSIT_AMOUNT } = require('./services/auction');
-  // 品质保证金一次性预置给已认证养殖场；竞价保证金现按场缴纳，采购商出价时再交
+  // 品质保证金一次性预置给已认证养殖场；履约保证金现按场缴纳，采购商报价时再交
   const dep = db.prepare(`INSERT INTO deposits (user_id, type, amount, status, paid_at) VALUES (?, ?, ?, 'available', ?)`);
   dep.run(farm1.lastInsertRowid, 'farm_quality', FARM_DEPOSIT_AMOUNT, now);
   dep.run(farm2.lastInsertRowid, 'farm_quality', FARM_DEPOSIT_AMOUNT, now);
@@ -58,7 +58,7 @@ function seed() {
     '林下散养笨鸡蛋，蛋小但浓郁，适合高端餐饮。1 箱 360 枚。',
     150, 2, 150, now - 10 * 60 * 1000, now + 50 * 60 * 1000, 'auctioning', now - 10 * 60 * 1000, 'supply', '元/箱');
 
-  // === 求购（采购商发布，养殖场竞价应标，价低者得） ===
+  // === 求购（采购商发布，养殖场报价应标，价低者得） ===
   r.run(buyer1.lastInsertRowid, '【求购】红壳鸡蛋 20 箱·北京自提', '北京', '北京', '海兰褐', null, '红壳', '55-65g/枚', '硬壳',
     7, 20,
     JSON.stringify(['https://images.unsplash.com/photo-1582722872445-44dc5f7e3c8f?w=800']),

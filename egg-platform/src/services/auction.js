@@ -21,7 +21,7 @@ function releaseAndCredit(whereClause, ...params) {
   return rows.length;
 }
 
-// 释放某个资源相关的所有保证金（取消 / 流拍 / 结束竞价场景的便捷入口）
+// 释放某个资源相关的所有保证金（取消 / 未成交 / 确认成交场景的便捷入口）
 function releaseResourceDeposits(resourceId) {
   // 新模型（from_balance=1）：解冻回钱包可用余额
   const newOnes = db.prepare(`
@@ -149,9 +149,9 @@ const {
   notifyPlatformOnDeal,
 } = require('./notification');
 
-const ANTI_SNIPE_WINDOW_MS = 5 * 60 * 1000; // 最后一次出价后静默此时长即成交
+const ANTI_SNIPE_WINDOW_MS = 5 * 60 * 1000; // 最后一次报价后静默此时长即成交
 
-// 统一保证金：所有三类（发布货源 / 发起求购 / 参与竞价）固定一笔，
+// 统一保证金：所有三类（发布货源 / 发起求购 / 参与报价）固定一笔，
 // 后台 settings.deposit_amount 可改。原签名 (type, qty) 保留兼容旧调用点。
 function computeDepositAmount(/* type, qty */) {
   return Number(settings.get('deposit_amount')) || 0;
@@ -164,7 +164,7 @@ function getResource(id) {
   return db.prepare('SELECT * FROM resources WHERE id = ?').get(id);
 }
 
-// 竞价保证金按「资源」绑定：每个货源单独一笔。返回该用户对该资源的有效保证金，没有则 null。
+// 履约保证金按「资源」绑定：每个货源单独一笔。返回该用户对该资源的有效保证金，没有则 null。
 function resourceDeposit(userId, resourceId) {
   return db.prepare(`
     SELECT * FROM deposits
@@ -176,22 +176,22 @@ function placeBidTx(resourceId, bidderId, price, isAuto = 0, maxPrice = null) {
   const now = Date.now();
   const resource = getResource(resourceId);
   if (!resource) throw new Error('资源不存在');
-  if (resource.status !== 'auctioning') throw new Error('竞价未进行中');
-  if (now < resource.start_at) throw new Error('竞价未开始');
-  if (now > resource.end_at && !resource.current_bidder_id) throw new Error('竞价已结束');
-  if (resource.farm_id === bidderId) throw new Error('不能参与自己发布的竞价');
+  if (resource.status !== 'auctioning') throw new Error('报价未进行中');
+  if (now < resource.start_at) throw new Error('报价未开始');
+  if (now > resource.end_at && !resource.current_bidder_id) throw new Error('报价已结束');
+  if (resource.farm_id === bidderId) throw new Error('不能参与自己发布的报价');
 
   const isSupply = (resource.kind || 'supply') === 'supply';
   if (isSupply) {
     const requiredMin = (resource.current_bidder_id ? resource.current_price : resource.start_price - resource.min_increment) + resource.min_increment;
-    if (price < requiredMin) throw new Error(`出价需 ≥ ${requiredMin} 元`);
+    if (price < requiredMin) throw new Error(`报价需 ≥ ${requiredMin} 元`);
   } else {
     const requiredMax = (resource.current_bidder_id ? resource.current_price : resource.start_price + resource.min_increment) - resource.min_increment;
     if (price > requiredMax) throw new Error(`报价需 ≤ ${requiredMax} 元`);
   }
 
   const dep = resourceDeposit(bidderId, resourceId);
-  if (!dep) throw new Error('请先为该竞价缴纳保证金');
+  if (!dep) throw new Error('请先为该报价缴纳保证金');
 
   db.prepare(`
     INSERT INTO bids (resource_id, bidder_id, price, is_auto, max_price, created_at)
@@ -200,7 +200,7 @@ function placeBidTx(resourceId, bidderId, price, isAuto = 0, maxPrice = null) {
 
   const prevBidder = resource.current_bidder_id;
 
-  // 软关闭：每次出价刷新 last_bid_at。静默满 ANTI_SNIPE_WINDOW_MS 即成交（见 closeAuction）。
+  // 软关闭：每次报价刷新 last_bid_at。静默满 ANTI_SNIPE_WINDOW_MS 即成交（见 closeAuction）。
   db.prepare(`
     UPDATE resources
     SET current_price = ?, current_bidder_id = ?, last_bid_at = ?
@@ -209,11 +209,11 @@ function placeBidTx(resourceId, bidderId, price, isAuto = 0, maxPrice = null) {
 
   if (prevBidder && prevBidder !== bidderId) {
     notify(prevBidder, 'outbid', isSupply ? '被反超' : '被压价',
-      `您在「${resource.title}」的${isSupply ? '出价' : '报价'}已被超过，可继续出价`, resourceId);
+      `您在「${resource.title}」的${isSupply ? '报价' : '报价'}已被超过，可继续报价`, resourceId);
   }
 
-  notify(resource.farm_id, 'new_bid', isSupply ? '新出价' : '新报价',
-    `「${resource.title}」收到 ${price} 元${isSupply ? '出价' : '报价'}`, resourceId);
+  notify(resource.farm_id, 'new_bid', isSupply ? '新报价' : '新报价',
+    `「${resource.title}」收到 ${price} 元${isSupply ? '报价' : '报价'}`, resourceId);
 
   triggerAutoBids(resourceId, bidderId);
 
@@ -251,10 +251,10 @@ function closeAuction(resourceId, force = false) {
   const now = Date.now();
 
   // 软关闭规则：
-  //  - 有出价：最后一次出价后静默满 5 分钟即成交（不必等到计划结束时间）；
-  //    只要有人在 5 分钟内继续出价就一直顺延（无限防狙击）。
-  //  - 无出价：到计划结束时间即流拍。
-  //  - force=true：发布方手动结束竞价，跳过静默检查直接按当前最高价成交。
+  //  - 有报价：最后一次报价后静默满 5 分钟即成交（不必等到计划结束时间）；
+  //    只要有人在 5 分钟内继续报价就一直顺延（无限防狙击）。
+  //  - 无报价：到计划结束时间即未成交。
+  //  - force=true：发布方手动确认成交，跳过静默检查直接按当前最高价成交。
   if (!force) {
     if (r.current_bidder_id) {
       const lastBid = r.last_bid_at || r.start_at;
@@ -276,26 +276,26 @@ function closeAuction(resourceId, force = false) {
     `).run(r.id, farmId, buyerId, r.current_price, r.quantity, now);
 
     // 站内 + 短信 + 微信订阅消息 三通道
-    notifyOrderReceived(r.farm_id, r, r.current_price, isSupply);          // 发布方：单已被拍下
-    notifyAuctionWon(r.current_bidder_id, r, r.current_price);             // 中标方：竞价成功
+    notifyOrderReceived(r.farm_id, r, r.current_price, isSupply);          // 发布方：单已已成交
+    notifyAuctionWon(r.current_bidder_id, r, r.current_price);             // 中标方：报价成功
     notifyPlatformOnDeal(r, farmId, buyerId, r.current_price);             // 平台方：企业微信 + 短信
 
     // 订单已生成 → 给买卖双方下发企业微信客服二维码 + 提示扫码加好友
     notifyOrderGroupReady(orderInfo.lastInsertRowid, buyerId, farmId, r);
 
-    // 未中标的其他出价者：发"未中标"通知 + 释放保证金
+    // 未中标的其他报价者：发"未中标"通知 + 释放保证金
     const losers = db.prepare(`
       SELECT DISTINCT bidder_id FROM bids WHERE resource_id=? AND bidder_id != ?
     `).all(r.id, r.current_bidder_id);
     for (const l of losers) notifyAuctionLost(l.bidder_id, r, r.current_price);
 
-    // 未中标的竞价保证金：释放 + 自动入账到对应用户余额
+    // 未中标的履约保证金：释放 + 自动入账到对应用户余额
     releaseAndCredit(`type='buyer_bid' AND resource_id=? AND user_id != ?`, r.id, r.current_bidder_id);
     // 发布方（货源/求购）保证金：在收货确认后通过 releaseDeposits(orderId) 再释放，这里保持冻结
   } else {
     db.prepare(`UPDATE resources SET status='failed' WHERE id=?`).run(r.id);
-    notifyAuctionFailedToPublisher(r.farm_id, r, isSupply);                // 发布方：流拍
-    // 流拍：该资源所有保证金（出价方 + 发布方）释放 + 入账
+    notifyAuctionFailedToPublisher(r.farm_id, r, isSupply);                // 发布方：未成交
+    // 未成交：该资源所有保证金（报价方 + 发布方）释放 + 入账
     releaseAndCredit(`resource_id=?`, r.id);
   }
 }
@@ -303,7 +303,7 @@ function closeAuction(resourceId, force = false) {
 function sweep() {
   const now = Date.now();
   db.prepare(`UPDATE resources SET status='auctioning' WHERE status='draft' AND start_at <= ?`).run(now);
-  // 候选：到计划结束时间（用于无人出价流拍），或已有出价且静默满 5 分钟（软关闭成交）。
+  // 候选：到计划结束时间（用于无人报价未成交），或已有报价且静默满 5 分钟（软关闭成交）。
   const silenceCutoff = now - ANTI_SNIPE_WINDOW_MS;
   const expired = db.prepare(`
     SELECT id FROM resources
@@ -331,7 +331,7 @@ function sweep() {
 function releaseDeposits(orderId) {
   const order = db.prepare('SELECT * FROM orders WHERE id=?').get(orderId);
   if (!order) return;
-  // 释放该资源上所有剩余保证金：中标者的竞价保证金 + 发布方的货源/求购保证金 → 入账
+  // 释放该资源上所有剩余保证金：中标者的履约保证金 + 发布方的货源/求购保证金 → 入账
   releaseAndCredit(`resource_id=?`, order.resource_id);
 }
 
