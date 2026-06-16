@@ -176,7 +176,7 @@ router.post('/', authRequired, (req, res) => {
   } = req.body;
 
   if (!title || !start_price || !quantity || !duration_hours) {
-    return res.status(400).json({ error: '请填写必填项：标题/起拍价/数量/报价时长' });
+    return res.status(400).json({ error: '请填写必填项：标题/起报价/数量/报价时长' });
   }
   const dh = Number(duration_hours);
   if (![1, 2, 3].includes(dh)) return res.status(400).json({ error: '报价时长仅支持 1/2/3 小时' });
