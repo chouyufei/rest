@@ -8,6 +8,41 @@ const wechat = require('../services/wechat');
 
 const router = express.Router();
 
+// ========= 审核员测试账号 =========
+// 微信小程序审核期间使用，免去短信验证码。审核通过后可删掉这整段。
+// 凭证写在代码里方便审核员一眼看到、复制粘贴登录。
+const TEST_ACCOUNTS = {
+  '审核员买家': { password: 'Test123456', role: 'buyer', phone: '13800000001', name: '审核员·采购方', license_status: 'none' },
+  '审核员卖家': { password: 'Test123456', role: 'farm',  phone: '13800000002', name: '审核员·养殖场', license_status: 'approved' },
+};
+
+router.post('/test-login', (req, res) => {
+  const { username, password } = req.body || {};
+  if (!username || !password) return res.status(400).json({ error: '请输入账号和密码' });
+  const acc = TEST_ACCOUNTS[String(username).trim()];
+  if (!acc || acc.password !== password) return res.status(400).json({ error: '账号或密码错误' });
+
+  let user = db.prepare('SELECT * FROM users WHERE phone = ?').get(acc.phone);
+  if (!user) {
+    const info = db.prepare(`
+      INSERT INTO users (phone, role, name, license_status, created_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(acc.phone, acc.role, acc.name, acc.license_status, Date.now());
+    user = db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
+  }
+  if (user.banned) return res.status(403).json({ error: '测试账号被冻结' });
+  res.json({ token: sign(user), user });
+});
+
+router.get('/test-accounts', (req, res) => {
+  // 公开返回测试账号清单（含密码），让小程序登录页直接显示
+  res.json({
+    accounts: Object.entries(TEST_ACCOUNTS).map(([username, a]) => ({
+      username, password: a.password, role_label: a.role === 'farm' ? '养殖场' : '采购商',
+    })),
+  });
+});
+
 router.post('/admin-login', (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) return res.status(400).json({ error: '缺少账号或密码' });
