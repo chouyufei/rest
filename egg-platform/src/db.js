@@ -271,6 +271,20 @@ addColumnIfMissing('pay_orders', 'purpose', "purpose TEXT NOT NULL DEFAULT 'depo
   `);
 })();
 addColumnIfMissing('pay_orders', 'resource_id', 'resource_id INTEGER');
+addColumnIfMissing('orders', 'order_no', 'order_no TEXT');                  // 16 位订单编号，用户可凭此向客服反馈
+
+// 给历史订单补 order_no（一次性，幂等：已有就跳过）
+(function backfillOrderNo() {
+  const rows = db.prepare(`SELECT id, created_at FROM orders WHERE order_no IS NULL OR order_no = ''`).all();
+  for (const r of rows) {
+    const ts = String(r.created_at || Date.now()).slice(-13);
+    const rnd = String(Math.floor(Math.random() * 1000)).padStart(3, '0');
+    const no = (ts + rnd).slice(0, 16).padEnd(16, '0');
+    db.prepare(`UPDATE orders SET order_no = ? WHERE id = ?`).run(no, r.id);
+  }
+})();
+
+db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_order_no ON orders(order_no) WHERE order_no IS NOT NULL;`);
 
 db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username) WHERE username IS NOT NULL;`);
 

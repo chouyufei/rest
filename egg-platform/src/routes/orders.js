@@ -32,7 +32,11 @@ router.get('/', authRequired, (req, res) => {
 });
 
 router.get('/:id', authRequired, (req, res) => {
-  const o = db.prepare('SELECT * FROM orders WHERE id=?').get(req.params.id);
+  // 支持用 数字 id 或 16 位 order_no 查询
+  const key = String(req.params.id);
+  const o = /^\d{16}$/.test(key)
+    ? db.prepare('SELECT * FROM orders WHERE order_no=?').get(key)
+    : db.prepare('SELECT * FROM orders WHERE id=?').get(key);
   if (!o) return res.status(404).json({ error: '订单不存在' });
   if (req.user.role !== 'admin' && o.farm_id !== req.user.id && o.buyer_id !== req.user.id) {
     return res.status(403).json({ error: '无权查看' });

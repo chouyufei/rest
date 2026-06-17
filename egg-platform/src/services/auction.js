@@ -270,10 +270,12 @@ function closeAuction(resourceId, force = false) {
     db.prepare(`UPDATE resources SET status='sold' WHERE id=?`).run(r.id);
     const farmId = isSupply ? r.farm_id : r.current_bidder_id;
     const buyerId = isSupply ? r.current_bidder_id : r.farm_id;
+    // 生成 16 位订单编号：时间戳(13) + 随机(3)
+    const orderNo = (String(now).slice(-13) + String(Math.floor(Math.random() * 1000)).padStart(3, '0')).slice(0, 16);
     const orderInfo = db.prepare(`
-      INSERT INTO orders (resource_id, farm_id, buyer_id, final_price, quantity, status, created_at)
-      VALUES (?, ?, ?, ?, ?, 'pending_group', ?)
-    `).run(r.id, farmId, buyerId, r.current_price, r.quantity, now);
+      INSERT INTO orders (resource_id, farm_id, buyer_id, final_price, quantity, status, order_no, created_at)
+      VALUES (?, ?, ?, ?, ?, 'pending_group', ?, ?)
+    `).run(r.id, farmId, buyerId, r.current_price, r.quantity, orderNo, now);
 
     // 站内 + 短信 + 微信订阅消息 三通道
     notifyOrderReceived(r.farm_id, r, r.current_price, isSupply);          // 发布方：单已已成交
