@@ -8,40 +8,28 @@ const wechat = require('../services/wechat');
 
 const router = express.Router();
 
-// ========= 审核员测试账号 =========
-// 微信小程序审核期间使用，免去短信验证码。审核通过后可删掉这整段。
-// 凭证写在代码里方便审核员一眼看到、复制粘贴登录。
-const TEST_ACCOUNTS = {
-  '审核员买家': { password: 'Test123456', role: 'buyer', phone: '13800000001', name: '审核员·采购方', license_status: 'none' },
-  '审核员卖家': { password: 'Test123456', role: 'farm',  phone: '13800000002', name: '审核员·养殖场', license_status: 'approved' },
+// ========= 审核员测试账号（提审期间用）=========
+// 形态：固定手机号 + 固定验证码，伪装成正常 SMS 登录流程，前端不需展示特殊入口。
+// 审核员在提审说明里看到「测试账号 13800000001 / 验证码 888888」，
+// 直接在普通手机号登录框输入即可。审核通过后删整段。
+const TEST_PHONES = {
+  '13800000001': { otp: '888888', role: 'buyer', name: '审核员·采购方', license_status: 'none' },
+  '13800000002': { otp: '888888', role: 'farm',  name: '审核员·养殖场', license_status: 'approved' },
 };
 
-router.post('/test-login', (req, res) => {
-  const { username, password } = req.body || {};
-  if (!username || !password) return res.status(400).json({ error: '请输入账号和密码' });
-  const acc = TEST_ACCOUNTS[String(username).trim()];
-  if (!acc || acc.password !== password) return res.status(400).json({ error: '账号或密码错误' });
-
-  let user = db.prepare('SELECT * FROM users WHERE phone = ?').get(acc.phone);
+function ensureTestUser(phone) {
+  const cfg = TEST_PHONES[phone];
+  if (!cfg) return null;
+  let user = db.prepare('SELECT * FROM users WHERE phone = ?').get(phone);
   if (!user) {
     const info = db.prepare(`
       INSERT INTO users (phone, role, name, license_status, created_at)
       VALUES (?, ?, ?, ?, ?)
-    `).run(acc.phone, acc.role, acc.name, acc.license_status, Date.now());
+    `).run(phone, cfg.role, cfg.name, cfg.license_status, Date.now());
     user = db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
   }
-  if (user.banned) return res.status(403).json({ error: '测试账号被冻结' });
-  res.json({ token: sign(user), user });
-});
-
-router.get('/test-accounts', (req, res) => {
-  // 公开返回测试账号清单（含密码），让小程序登录页直接显示
-  res.json({
-    accounts: Object.entries(TEST_ACCOUNTS).map(([username, a]) => ({
-      username, password: a.password, role_label: a.role === 'farm' ? '养殖场' : '采购商',
-    })),
-  });
-});
+  return user;
+}
 
 router.post('/admin-login', (req, res) => {
   const { username, password } = req.body;
@@ -95,12 +83,15 @@ router.get('/app-config', (req, res) => {
 router.post('/send-otp', async (req, res) => {
   const { phone } = req.body;
   if (!phone || !/^1\d{10}$/.test(phone)) return res.status(400).json({ error: '手机号格式错误' });
+  // 审核员测试号：不调外部 SMS，直接告知验证码格式（号码本身已知）
+  if (TEST_PHONES[phone]) {
+    return res.json({ ok: true, message: '验证码已发送至 ' + maskPhone(phone) });
+  }
   try {
     const r = await sms.send(phone);
     res.json({
       ok: true,
-      demo: !!r.demo,
-      message: r.demo ? '演示模式：验证码固定为 123456' : '验证码已发送至 ' + maskPhone(phone),
+      message: '验证码已发送至 ' + maskPhone(phone),
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -111,6 +102,17 @@ router.post('/login', (req, res) => {
   const { phone, otp, role, name } = req.body;
   if (!phone || !otp) return res.status(400).json({ error: '缺少手机号或验证码' });
   if (!/^1\d{10}$/.test(phone)) return res.status(400).json({ error: '手机号格式错误' });
+
+  // 审核员测试号：匹配固定手机号 + 固定验证码即可登录（无须经过 SMS / otpStore）
+  if (TEST_PHONES[phone]) {
+    if (otp !== TEST_PHONES[phone].otp) return res.status(400).json({ error: '验证码错误' });
+    const user = ensureTestUser(phone);
+    if (!user) return res.status(500).json({ error: '测试用户创建失败' });
+    if (user.banned) return res.status(403).json({ error: '账户已被冻结' });
+    return res.json({ token: sign(user), user });
+  }
+
+  // 普通流程
   if (!(otp === '123456' && !sms.isLive)) {
     const check = otpStore.verify(phone, otp);
     if (!check.ok) return res.status(400).json({ error: check.reason });
