@@ -164,7 +164,7 @@ function getResource(id) {
   return db.prepare('SELECT * FROM resources WHERE id = ?').get(id);
 }
 
-// 履约保证金按「资源」绑定：每个货源单独一笔。返回该用户对该资源的有效保证金，没有则 null。
+// 服务保障金按「资源」绑定：每个货源单独一笔。返回该用户对该资源的有效保证金，没有则 null。
 function resourceDeposit(userId, resourceId) {
   return db.prepare(`
     SELECT * FROM deposits
@@ -291,7 +291,7 @@ function closeAuction(resourceId, force = false) {
     `).all(r.id, r.current_bidder_id);
     for (const l of losers) notifyAuctionLost(l.bidder_id, r, r.current_price);
 
-    // 未中标的履约保证金：释放 + 自动入账到对应用户余额
+    // 未中标的服务保障金：释放 + 自动入账到对应用户余额
     releaseAndCredit(`type='buyer_bid' AND resource_id=? AND user_id != ?`, r.id, r.current_bidder_id);
     // 发布方（货源/求购）保证金：在收货确认后通过 releaseDeposits(orderId) 再释放，这里保持冻结
   } else {
@@ -333,7 +333,7 @@ function sweep() {
 function releaseDeposits(orderId) {
   const order = db.prepare('SELECT * FROM orders WHERE id=?').get(orderId);
   if (!order) return;
-  // 释放该资源上所有剩余保证金：中标者的履约保证金 + 发布方的货源/求购保证金 → 入账
+  // 释放该资源上所有剩余保证金：中标者的服务保障金 + 发布方的货源/求购保证金 → 入账
   releaseAndCredit(`resource_id=?`, order.resource_id);
 }
 

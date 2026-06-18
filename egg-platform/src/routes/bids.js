@@ -14,7 +14,7 @@ router.post('/', authRequired, (req, res) => {
   const isSupply = (r.kind || 'supply') === 'supply';
   if (isSupply && req.user.role !== 'buyer') return res.status(403).json({ error: '货源仅限采购商报价' });
   if (!isSupply && req.user.role !== 'farm') return res.status(403).json({ error: '求购仅限养殖场应标' });
-  // 首次报价：自动从钱包冻结一笔履约保证金
+  // 首次报价：自动从钱包冻结一笔服务保障金
   try {
     lockDepositForResource({ userId: req.user.id, resourceId: Number(resource_id), type: 'buyer_bid' });
   } catch (e) {

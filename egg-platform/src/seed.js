@@ -26,7 +26,7 @@ function seed() {
     .run('13900000003', '上海蛋品贸易', '上海', now);
 
   const { FARM_DEPOSIT_AMOUNT } = require('./services/auction');
-  // 品质保证金一次性预置给已认证养殖场；履约保证金现按场缴纳，采购商报价时再交
+  // 服务保障金一次性预置给已认证养殖场；服务保障金现按场缴纳，采购商报价时再交
   const dep = db.prepare(`INSERT INTO deposits (user_id, type, amount, status, paid_at) VALUES (?, ?, ?, 'available', ?)`);
   dep.run(farm1.lastInsertRowid, 'farm_quality', FARM_DEPOSIT_AMOUNT, now);
   dep.run(farm2.lastInsertRowid, 'farm_quality', FARM_DEPOSIT_AMOUNT, now);

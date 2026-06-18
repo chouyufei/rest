@@ -61,12 +61,12 @@ router.post('/create-order', authRequired, async (req, res) => {
   if (!['farm_quality', 'buyer_bid', 'demand_quality'].includes(type)) {
     return res.status(400).json({ error: '保证金类型错误' });
   }
-  if (type === 'farm_quality' && req.user.role !== 'farm') return res.status(403).json({ error: '仅养殖场需缴纳品质保证金' });
+  if (type === 'farm_quality' && req.user.role !== 'farm') return res.status(403).json({ error: '仅养殖场需缴纳服务保障金' });
   if (type === 'farm_quality' && req.user.license_status !== 'approved') {
     return res.status(403).json({ error: '请先完成资质审核' });
   }
   if (type === 'demand_quality' && req.user.role !== 'buyer') return res.status(403).json({ error: '仅采购商需缴纳求购保证金' });
-  if (type === 'buyer_bid' && !resourceId) return res.status(400).json({ error: '履约保证金需指定货源' });
+  if (type === 'buyer_bid' && !resourceId) return res.status(400).json({ error: '服务保障金需指定货源' });
 
   const amount = computeDepositAmount(type, type === 'buyer_bid'
     ? (db.prepare('SELECT quantity FROM resources WHERE id=?').get(resourceId)?.quantity || qty)
