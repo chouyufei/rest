@@ -239,6 +239,24 @@ CREATE TABLE IF NOT EXISTS withdrawals (
 );
 CREATE INDEX IF NOT EXISTS idx_withdrawals_user ON withdrawals(user_id, applied_at DESC);
 CREATE INDEX IF NOT EXISTS idx_withdrawals_status ON withdrawals(status, applied_at DESC);
+
+CREATE TABLE IF NOT EXISTS reports (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  reporter_id INTEGER NOT NULL,
+  target_type TEXT NOT NULL,   -- resource / user / chat_message / order
+  target_id INTEGER NOT NULL,
+  category TEXT NOT NULL,      -- 虚假信息 / 违禁品 / 涉嫌欺诈 / 不当言论 / 其它
+  description TEXT,
+  evidence TEXT,               -- JSON array of image URLs
+  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','resolved','rejected')),
+  resolution TEXT,
+  handled_at INTEGER,
+  handled_by INTEGER,
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (reporter_id) REFERENCES users(id)
+);
+CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_reports_target ON reports(target_type, target_id);
 `);
 addColumnIfMissing('deposits', 'resource_id', 'resource_id INTEGER');
 addColumnIfMissing('deposits', 'from_balance', 'from_balance INTEGER NOT NULL DEFAULT 0');  // 1=新模型（钱包冻结）；0=旧模型（微信支付）
