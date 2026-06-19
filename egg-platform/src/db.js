@@ -197,6 +197,9 @@ addColumnIfMissing('resources', 'unit_size', "unit_size TEXT DEFAULT '车'");
 addColumnIfMissing('resources', 'intro_video', 'intro_video TEXT');
 addColumnIfMissing('resources', 'defect_rate', 'defect_rate REAL');
 addColumnIfMissing('resources', 'defect_note', 'defect_note TEXT');
+addColumnIfMissing('resources', 'pack_size', 'pack_size INTEGER');                // 单箱枚数 (常见 360 / 480)
+addColumnIfMissing('resources', 'yolk_color', 'yolk_color TEXT');                // 蛋黄颜色: 红心 / 黄心 / 双色
+addColumnIfMissing('resources', 'yolk_shade', 'yolk_shade TEXT');                // 蛋黄色号 (罗氏比色卡 度数, 如 "12-13")
 addColumnIfMissing('resources', 'lat', 'lat REAL');                              // 发布时快照养殖场 / 采购商定位
 addColumnIfMissing('resources', 'lng', 'lng REAL');
 addColumnIfMissing('messages', 'image_url', 'image_url TEXT');                   // 消息可附带图片（如企业微信二维码）
