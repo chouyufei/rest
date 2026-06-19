@@ -338,13 +338,15 @@ router.post('/withdrawals/:id/mark-paid', async (req, res) => {
     const result = await transferToWechat(w, user && user.wechat_openid);
     if (result.ok) {
       actualTradeNo = actualTradeNo || result.transfer_id;
-      transferNote = `微信商家转账已发起 ${result.transfer_id}`;
+      transferNote = `微信商家转账已发起 ${result.transfer_id}` + (result.batch_id ? `（批次号 ${result.batch_id}）` : '');
     } else if (!result.demo) {
-      // 真实调用失败
+      // 真实 API 返回错误：不要静默标记成功，保持 approved/pending，把错误返回前端
+      console.error('[withdraw] 商家转账 API 调用失败', { withdrawalId: w.id, result });
       return res.status(500).json({ error: '商家转账失败: ' + (result.error || '未知'), detail: result });
     } else {
-      // demo / 未配置 → 提示管理员手工打款，但仍然完成记账
-      transferNote = '⚠ 未接入商家转账，需在微信商户后台手工打款';
+      // 缺前置条件（未配置 / SDK 未导出方法 / 用户未绑定 openid）→ 记账 + 透出原因
+      console.warn('[withdraw] 商家转账走 demo 分支', { withdrawalId: w.id, reason: result.reason, msg: result.message });
+      transferNote = `⚠ ${result.message || '未接入商家转账，需在微信商户后台手工打款'}（reason=${result.reason || 'UNKNOWN'}）`;
     }
   } else if (w.method === 'bank') {
     transferNote = '银行卡转账需后台财务线下操作';
