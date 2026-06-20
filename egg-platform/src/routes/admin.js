@@ -341,8 +341,20 @@ router.post('/withdrawals/:id/mark-paid', async (req, res) => {
       transferNote = `微信商家转账已发起 ${result.transfer_id}` + (result.batch_id ? `（批次号 ${result.batch_id}）` : '');
     } else if (!result.demo) {
       // 真实 API 返回错误：不要静默标记成功，保持 approved/pending，把错误返回前端
-      console.error('[withdraw] 商家转账 API 调用失败', { withdrawalId: w.id, result });
-      return res.status(500).json({ error: '商家转账失败: ' + (result.error || '未知'), detail: result });
+      console.error('[withdraw] 商家转账 API 调用失败', {
+        withdrawalId: w.id,
+        http_status: result.http_status,
+        wx_code: result.wx_code,
+        wx_message: result.wx_message,
+        wx_detail: result.wx_detail,
+      });
+      return res.status(500).json({
+        error: '商家转账失败: ' + (result.error || '未知'),
+        http_status: result.http_status,
+        wx_code: result.wx_code,
+        wx_message: result.wx_message,
+        wx_detail: result.wx_detail,
+      });
     } else {
       // 缺前置条件（未配置 / SDK 未导出方法 / 用户未绑定 openid）→ 记账 + 透出原因
       console.warn('[withdraw] 商家转账走 demo 分支', { withdrawalId: w.id, reason: result.reason, msg: result.message });

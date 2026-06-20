@@ -62,8 +62,11 @@ async function transferToWechat(withdrawal, openid) {
   const outDetailNo = 'D' + Date.now() + withdrawal.id;
   const totalFen = Math.round(Number(withdrawal.amount) * 100);
 
+  // 部分商户需要在 payload 里带 transfer_scene_id（在商户后台「商家转账」申请场景后给到）
+  const sceneId = process.env.WECHAT_TRANSFER_SCENE_ID || '';
+
   try {
-    const result = await fn.call(pay, {
+    const payload = {
       appid: WECHAT_APP_ID,
       out_batch_no: outBatchNo,
       batch_name: '凤伯乐提现',
@@ -76,21 +79,62 @@ async function transferToWechat(withdrawal, openid) {
         transfer_remark: `凤伯乐 #${withdrawal.id}`,
         openid,
       }],
-    });
-    // wechatpay-node-v3 返回的对象通常带 { status, data, headers }
+    };
+    if (sceneId) payload.transfer_scene_id = sceneId;
+
+    const result = await fn.call(pay, payload);
+    // wechatpay-node-v3 成功：{ status: 200, data: {...} }
     if (result && result.status === 200) {
       return { ok: true, transfer_id: outBatchNo, batch_id: result.data && result.data.batch_id, raw: result.data };
     }
+    // 失败：{ status: 4xx, error: <raw response text>, errRaw }
+    // 微信 V3 错误 body 是 JSON：{ "code": "FORBIDDEN", "message": "未授权访问该API" }
+    let wxCode = '', wxMessage = '', wxDetail = null;
+    if (result && result.error) {
+      try {
+        const parsed = typeof result.error === 'string' ? JSON.parse(result.error) : result.error;
+        wxCode = parsed.code || '';
+        wxMessage = parsed.message || '';
+        wxDetail = parsed.detail || null;
+      } catch (e) {
+        wxMessage = String(result.error).slice(0, 300);
+      }
+    }
+    const httpStatus = (result && result.status) || 0;
+    const friendly = explainWxError(httpStatus, wxCode, wxMessage);
     return {
       ok: false,
-      error: (result && result.error && (result.error.message || result.error.code))
-        || (result && result.data && (result.data.message || result.data.code))
-        || ('HTTP ' + (result && result.status)),
+      http_status: httpStatus,
+      wx_code: wxCode,
+      wx_message: wxMessage,
+      wx_detail: wxDetail,
+      error: friendly,
       raw: result,
     };
   } catch (e) {
     return { ok: false, error: e.message || String(e), stack: e.stack };
   }
+}
+
+// 把常见的微信 V3 错误码翻译成"接下来该做什么"的提示
+function explainWxError(http, code, msg) {
+  const base = (code ? `[${code}] ` : `[HTTP ${http}] `) + (msg || '');
+  if (http === 403 || code === 'FORBIDDEN' || code === 'NO_AUTH') {
+    return base + ' — 通常是商户未开通"商家转账"产品权限 / 该 API 未授权 / 未申请对应转账场景。请到微信商户平台 → 产品中心 → 商家转账，确认权限已开通并申请场景，拿到 transfer_scene_id 后配 WECHAT_TRANSFER_SCENE_ID 环境变量重试。';
+  }
+  if (code === 'SIGN_ERROR' || code === 'INVALID_SIGNATURE') {
+    return base + ' — 签名错误：检查 WECHAT_SERIAL_NO（商户证书序列号）/ WECHAT_PRIVATE_KEY（与证书匹配的私钥）是否正确。';
+  }
+  if (code === 'RULE_LIMIT' || code === 'AMOUNT_LIMIT') {
+    return base + ' — 商户转账额度或频率被限制（单日上限 / 单笔上限 / 频次）。';
+  }
+  if (code === 'PAYEE_ERROR' || code === 'NOT_FOUND') {
+    return base + ' — 收款用户 openid 无效或与当前 AppID 不绑定（可能用户没在该小程序授权过登录）。';
+  }
+  if (code === 'PARAM_ERROR') {
+    return base + ' — 参数错误：检查 out_batch_no 唯一性、金额最小 0.3 元、备注字符等。';
+  }
+  return base;
 }
 
 module.exports = { transferToWechat, isConfigured };
