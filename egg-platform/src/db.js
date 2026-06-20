@@ -325,6 +325,20 @@ db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username)
   }
 })();
 
+// 一次性把历史保存过的保证金额度钳到 500 以内（新规则：冻结 = 服务费 = 500）
+(function clampDepositAmount() {
+  const CAP = 500;
+  const row = db.prepare("SELECT value FROM app_settings WHERE key='deposit_amount'").get();
+  if (!row) return;
+  let v;
+  try { v = JSON.parse(row.value); } catch (e) { return; }
+  if (typeof v === 'number' && v > CAP) {
+    db.prepare(`UPDATE app_settings SET value=?, updated_at=? WHERE key='deposit_amount'`)
+      .run(JSON.stringify(CAP), Date.now());
+    console.log(`[migrate] deposit_amount ${v} → ${CAP}`);
+  }
+})();
+
 (function ensureDefaultAdmin() {
   const bcrypt = require('bcryptjs');
   const existing = db.prepare("SELECT id, username, password FROM users WHERE username='admin'").get();
