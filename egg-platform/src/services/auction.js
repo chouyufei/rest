@@ -79,7 +79,8 @@ function lockDepositForResource({ userId, resourceId, type }) {
   return db.prepare('SELECT * FROM deposits WHERE id=?').get(info.lastInsertRowid);
 }
 
-// 订单完成时：从买卖双方各扣一笔服务费，剩余解冻
+// 订单完成时：仅从卖方（养殖场，order.farm_id）的服务保障金中扣一笔服务费，
+// 买方冻结的保障金全额解冻
 function settleOrderDeposits(orderId) {
   const order = db.prepare('SELECT * FROM orders WHERE id=?').get(orderId);
   if (!order) return;
@@ -93,7 +94,9 @@ function settleOrderDeposits(orderId) {
     // 去重：已结算过则跳过
     const dup = db.prepare(`SELECT id FROM balance_transactions WHERE type='service_fee' AND ref_type='deposit' AND ref_id=?`).get(dep.id);
     if (dup) continue;
-    const actualFee = Math.min(fee, dep.amount);
+    // 卖方 = order.farm_id；其它人（买方等）一律全额解冻不扣费
+    const isSeller = dep.user_id === order.farm_id;
+    const actualFee = isSeller ? Math.min(fee, dep.amount) : 0;
     if (actualFee > 0) {
       balance.consume(dep.user_id, actualFee, {
         type: 'service_fee',
@@ -112,7 +115,7 @@ function settleOrderDeposits(orderId) {
       });
     }
     db.prepare(`UPDATE deposits SET status='deducted', released_at=?, note=? WHERE id=?`)
-      .run(now, `已扣服务费 ${actualFee} 元，余 ${rest} 元解冻`, dep.id);
+      .run(now, isSeller ? `已扣服务费 ${actualFee} 元，余 ${rest} 元解冻` : `非卖方，全额解冻`, dep.id);
   }
 }
 
