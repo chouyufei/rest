@@ -333,9 +333,11 @@ router.post('/withdrawals/:id/mark-paid', async (req, res) => {
 
   if (mode !== 'manual' && w.method === 'wechat') {
     // 尝试微信商家转账
-    const user = db.prepare('SELECT id, wechat_openid FROM users WHERE id=?').get(w.user_id);
+    const user = db.prepare('SELECT id, name, wechat_openid FROM users WHERE id=?').get(w.user_id);
     const { transferToWechat } = require('../services/wechat-transfer');
-    const result = await transferToWechat(w, user && user.wechat_openid);
+    // 单笔转账新接口在 >= 2000 元时强制要求实名，从 user.name 取
+    const wPayload = { ...w, _user_name: (user && user.name) || '' };
+    const result = await transferToWechat(wPayload, user && user.wechat_openid);
     if (result.ok) {
       actualTradeNo = actualTradeNo || result.transfer_id;
       transferNote = `微信商家转账已发起 ${result.transfer_id}` + (result.batch_id ? `（批次号 ${result.batch_id}）` : '');
