@@ -28,9 +28,9 @@ const DEFAULTS = {
 
   // 提现规则（按微信审核要求显式声明，并在前端展示给用户）
   withdraw_min_amount: 1,                   // 最低单笔提现 (元)
-  withdraw_max_per_request: 50000,          // 单笔最高 (元)
+  withdraw_max_per_request: 5000,           // 单笔最高 (元)
   withdraw_max_daily_count: 3,              // 每日最多申请次数
-  withdraw_max_daily_amount: 50000,         // 每日最高提现总额 (元)
+  withdraw_max_daily_amount: 5000,          // 每日最高提现总额 (元)
   withdraw_processing_hours: 24,            // 审核处理时长 (小时)
   withdraw_arrival_hours: 72,               // 审核通过后到账时长 (小时，约 1-3 个工作日)
   withdraw_fee_pct: 0,                      // 提现手续费百分比 (0 = 免手续费)

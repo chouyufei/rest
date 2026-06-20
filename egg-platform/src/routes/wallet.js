@@ -10,9 +10,9 @@ const router = express.Router();
 function withdrawRules() {
   return {
     min_amount: Number(settings.get('withdraw_min_amount')) || 1,
-    max_per_request: Number(settings.get('withdraw_max_per_request')) || 50000,
+    max_per_request: Number(settings.get('withdraw_max_per_request')) || 5000,
     max_daily_count: Number(settings.get('withdraw_max_daily_count')) || 3,
-    max_daily_amount: Number(settings.get('withdraw_max_daily_amount')) || 50000,
+    max_daily_amount: Number(settings.get('withdraw_max_daily_amount')) || 5000,
     processing_hours: Number(settings.get('withdraw_processing_hours')) || 24,
     arrival_hours: Number(settings.get('withdraw_arrival_hours')) || 72,
     fee_pct: Number(settings.get('withdraw_fee_pct')) || 0,
