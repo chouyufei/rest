@@ -209,7 +209,6 @@ db.exec(`CREATE TABLE IF NOT EXISTS app_settings (
   value TEXT NOT NULL,
   updated_at INTEGER NOT NULL
 );
-
 CREATE TABLE IF NOT EXISTS balance_transactions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL,
@@ -308,6 +307,23 @@ addColumnIfMissing('orders', 'order_no', 'order_no TEXT');                  // 1
 db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_order_no ON orders(order_no) WHERE order_no IS NOT NULL;`);
 
 db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username) WHERE username IS NOT NULL;`);
+
+// 一次性把历史保存过的提现单笔/日累计上限钳到 5000 以内
+// （之前默认 50000，会被 app_settings 行覆盖；现在新规则是 5000 封顶）
+(function clampWithdrawCaps() {
+  const CAP = 5000;
+  for (const key of ['withdraw_max_per_request', 'withdraw_max_daily_amount']) {
+    const row = db.prepare('SELECT value FROM app_settings WHERE key=?').get(key);
+    if (!row) continue;
+    let v;
+    try { v = JSON.parse(row.value); } catch (e) { continue; }
+    if (typeof v === 'number' && v > CAP) {
+      db.prepare(`UPDATE app_settings SET value=?, updated_at=? WHERE key=?`)
+        .run(JSON.stringify(CAP), Date.now(), key);
+      console.log(`[migrate] ${key} ${v} → ${CAP}`);
+    }
+  }
+})();
 
 (function ensureDefaultAdmin() {
   const bcrypt = require('bcryptjs');
