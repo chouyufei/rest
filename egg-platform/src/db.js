@@ -406,6 +406,23 @@ db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username)
   }
 })();
 
+// 一次性把异常低（< 1 元，多为早期测试残留 0 / 0.01）的保证金 / 服务费
+// 拉到默认 500，避免订单完成时"扣 0 元服务费"的尴尬
+(function bumpZeroFeeOrDeposit() {
+  const DEFAULT = 500;
+  for (const key of ['service_fee_amount', 'deposit_amount']) {
+    const row = db.prepare('SELECT value FROM app_settings WHERE key=?').get(key);
+    if (!row) continue;
+    let v;
+    try { v = JSON.parse(row.value); } catch (e) { continue; }
+    if (typeof v === 'number' && v < 1) {
+      db.prepare(`UPDATE app_settings SET value=?, updated_at=? WHERE key=?`)
+        .run(JSON.stringify(DEFAULT), Date.now(), key);
+      console.log(`[migrate] ${key} ${v} → ${DEFAULT}`);
+    }
+  }
+})();
+
 (function ensureDefaultAdmin() {
   const bcrypt = require('bcryptjs');
   const existing = db.prepare("SELECT id, username, password FROM users WHERE username='admin'").get();
