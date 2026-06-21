@@ -335,6 +335,31 @@ addColumnIfMissing('withdrawals', 'transfer_bill_no', 'transfer_bill_no TEXT'); 
   `);
 })();
 
+// 一次性修正：旧版 balance.consume() 只扣了 locked_balance，没扣 balance；
+// 把每个用户的历史「withdraw_paid」金额从 balance 里补减回去，使数据归正。
+(function fixHistoricalWithdrawPaidBalance() {
+  const flag = db.prepare("SELECT value FROM app_settings WHERE key='_fix_withdraw_paid_balance_v1'").get();
+  if (flag) return;
+  const txns = db.prepare(`
+    SELECT user_id, SUM(-amount) AS total_paid
+    FROM balance_transactions
+    WHERE type='withdraw_paid' AND amount < 0
+    GROUP BY user_id
+    HAVING total_paid > 0
+  `).all();
+  for (const t of txns) {
+    const u = db.prepare('SELECT balance FROM users WHERE id=?').get(t.user_id);
+    if (!u) continue;
+    const newBal = Math.max(0, Number(u.balance) - Number(t.total_paid));
+    db.prepare('UPDATE users SET balance=? WHERE id=?').run(newBal, t.user_id);
+    console.log(`[migrate] user ${t.user_id} balance ${u.balance} - paid ${t.total_paid} → ${newBal}`);
+  }
+  db.prepare(`
+    INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)
+    ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+  `).run('_fix_withdraw_paid_balance_v1', JSON.stringify(true), Date.now());
+})();
+
 // 给历史订单补 order_no（一次性，幂等：已有就跳过）
 (function backfillOrderNo() {
   const rows = db.prepare(`SELECT id, created_at FROM orders WHERE order_no IS NULL OR order_no = ''`).all();
