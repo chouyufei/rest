@@ -6,17 +6,26 @@ const settings = require('../services/settings');
 
 const router = express.Router();
 
-// 提现规则统一从 settings 读取，便于管理员后台动态调整
+// 提现规则统一从 settings 读取，微信零钱 / 银行卡 分两套额度。
 function withdrawRules() {
   return {
     min_amount: Number(settings.get('withdraw_min_amount')) || 1,
-    max_per_request: Number(settings.get('withdraw_max_per_request')) || 5000,
-    max_daily_count: Number(settings.get('withdraw_max_daily_count')) || 3,
-    max_daily_amount: Number(settings.get('withdraw_max_daily_amount')) || 5000,
     processing_hours: Number(settings.get('withdraw_processing_hours')) || 24,
     arrival_hours: Number(settings.get('withdraw_arrival_hours')) || 72,
     fee_pct: Number(settings.get('withdraw_fee_pct')) || 0,
     window: String(settings.get('withdraw_window') || '工作日 09:00-18:00'),
+    methods: {
+      wechat: {
+        max_per_request: Number(settings.get('withdraw_wechat_max_per_request')) || 200,
+        max_daily_count: Number(settings.get('withdraw_wechat_max_daily_count')) || 10,
+        max_daily_amount: Number(settings.get('withdraw_wechat_max_daily_amount')) || 2000,
+      },
+      bank: {
+        max_per_request: Number(settings.get('withdraw_max_per_request')) || 5000,
+        max_daily_count: Number(settings.get('withdraw_max_daily_count')) || 3,
+        max_daily_amount: Number(settings.get('withdraw_max_daily_amount')) || 5000,
+      },
+    },
   };
 }
 
@@ -103,9 +112,12 @@ router.post('/withdrawals', authRequired, (req, res) => {
   const amt = Number(amount);
   const rules = withdrawRules();
 
-  if (!(amt >= rules.min_amount)) return res.status(400).json({ error: `单笔提现至少 ${rules.min_amount} 元` });
-  if (amt > rules.max_per_request) return res.status(400).json({ error: `单笔提现上限 ${rules.max_per_request} 元` });
   if (!['wechat', 'bank'].includes(method)) return res.status(400).json({ error: '提现方式仅支持 wechat / bank' });
+  const mr = rules.methods[method];
+  const methodLabel = method === 'wechat' ? '微信零钱' : '银行卡';
+
+  if (!(amt >= rules.min_amount)) return res.status(400).json({ error: `单笔提现至少 ${rules.min_amount} 元` });
+  if (amt > mr.max_per_request) return res.status(400).json({ error: `${methodLabel}单笔提现上限 ${mr.max_per_request} 元` });
   if (method === 'bank') {
     if (!account_name || !account_no || !bank_name) return res.status(400).json({ error: '银行卡提现需填写持卡人 / 卡号 / 开户行' });
   }
@@ -113,21 +125,21 @@ router.post('/withdrawals', authRequired, (req, res) => {
   const b = balance.getBalance(req.user.id);
   if (b.available < amt) return res.status(400).json({ error: `可用余额不足，当前 ${b.available} 元` });
 
-  // 每日提现次数 / 金额上限（按自然日，UTC+8 起算的当日 00:00 开始）
+  // 每日提现次数 / 金额上限（按自然日，UTC+8 起算的当日 00:00 开始，分 method 各算各的）
   const dayStart = new Date();
   dayStart.setHours(0, 0, 0, 0);
   const todayStart = dayStart.getTime();
   const todayRow = db.prepare(`
     SELECT COUNT(*) AS c, COALESCE(SUM(amount), 0) AS s
     FROM withdrawals
-    WHERE user_id=? AND applied_at >= ? AND status != 'cancelled'
-  `).get(req.user.id, todayStart);
-  if (todayRow.c >= rules.max_daily_count) {
-    return res.status(400).json({ error: `今日提现申请已达上限（${rules.max_daily_count} 次 / 日）` });
+    WHERE user_id=? AND method=? AND applied_at >= ? AND status != 'cancelled'
+  `).get(req.user.id, method, todayStart);
+  if (todayRow.c >= mr.max_daily_count) {
+    return res.status(400).json({ error: `今日${methodLabel}提现已达 ${mr.max_daily_count} 次上限` });
   }
-  if ((todayRow.s + amt) > rules.max_daily_amount) {
+  if ((todayRow.s + amt) > mr.max_daily_amount) {
     return res.status(400).json({
-      error: `今日提现总额将超过 ${rules.max_daily_amount} 元上限（已申请 ${todayRow.s} 元）`,
+      error: `今日${methodLabel}提现总额将超过 ${mr.max_daily_amount} 元上限（已申请 ${todayRow.s} 元）`,
     });
   }
 
