@@ -227,7 +227,7 @@ CREATE TABLE IF NOT EXISTS withdrawals (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL,
   amount REAL NOT NULL,
-  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected','paid','failed','cancelled')),
+  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','transferring','rejected','paid','failed','cancelled')),
   method TEXT NOT NULL DEFAULT 'wechat',  -- wechat | bank
   account_name TEXT,
   account_no TEXT,
@@ -292,6 +292,48 @@ addColumnIfMissing('pay_orders', 'purpose', "purpose TEXT NOT NULL DEFAULT 'depo
 })();
 addColumnIfMissing('pay_orders', 'resource_id', 'resource_id INTEGER');
 addColumnIfMissing('orders', 'order_no', 'order_no TEXT');                  // 16 位订单编号，用户可凭此向客服反馈
+addColumnIfMissing('withdrawals', 'package_info', 'package_info TEXT');     // 单笔转账 API 返回的 package_info，小程序拉起 wx.requestMerchantTransfer 用
+addColumnIfMissing('withdrawals', 'transfer_bill_no', 'transfer_bill_no TEXT'); // 微信转账单号
+
+// 一次性迁移：让 withdrawals.status 允许 'transferring'（转账已发起、等用户在小程序确认收款）
+(function ensureWithdrawStatusCheck() {
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='withdrawals'").get();
+  if (!row || !row.sql || row.sql.includes('transferring')) return;
+  db.exec(`
+    BEGIN;
+    CREATE TABLE withdrawals_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      amount REAL NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','transferring','rejected','paid','failed','cancelled')),
+      method TEXT NOT NULL DEFAULT 'wechat',
+      account_name TEXT,
+      account_no TEXT,
+      bank_name TEXT,
+      applied_at INTEGER NOT NULL,
+      processed_at INTEGER,
+      processed_by INTEGER,
+      out_trade_no TEXT,
+      failure_reason TEXT,
+      package_info TEXT,
+      transfer_bill_no TEXT,
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    );
+    INSERT INTO withdrawals_new
+      (id, user_id, amount, status, method, account_name, account_no, bank_name,
+       applied_at, processed_at, processed_by, out_trade_no, failure_reason,
+       package_info, transfer_bill_no)
+    SELECT id, user_id, amount, status, method, account_name, account_no, bank_name,
+       applied_at, processed_at, processed_by, out_trade_no, failure_reason,
+       package_info, transfer_bill_no
+    FROM withdrawals;
+    DROP TABLE withdrawals;
+    ALTER TABLE withdrawals_new RENAME TO withdrawals;
+    CREATE INDEX IF NOT EXISTS idx_withdrawals_user ON withdrawals(user_id, applied_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_withdrawals_status ON withdrawals(status, applied_at DESC);
+    COMMIT;
+  `);
+})();
 
 // 给历史订单补 order_no（一次性，幂等：已有就跳过）
 (function backfillOrderNo() {

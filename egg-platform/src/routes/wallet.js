@@ -164,6 +164,33 @@ router.get('/withdrawals/mine', authRequired, (req, res) => {
   res.json({ withdrawals: list });
 });
 
+// 商户配置（mchId / appId）：小程序拉起 wx.requestMerchantTransfer 用
+router.get('/wechat-pay-config', authRequired, (req, res) => {
+  res.json({
+    appid: process.env.WECHAT_APP_ID || '',
+    mch_id: process.env.WECHAT_MCH_ID || '',
+  });
+});
+
+// 用户从小程序「提现记录」点【确认收款】，wx.requestMerchantTransfer 成功后
+// 调一下这个接口告知后端，后端把状态收尾成 paid + 扣余额
+router.post('/withdrawals/:id/confirm-received', authRequired, (req, res) => {
+  const w = db.prepare('SELECT * FROM withdrawals WHERE id=? AND user_id=?').get(req.params.id, req.user.id);
+  if (!w) return res.status(404).json({ error: '提现申请不存在' });
+  if (w.status === 'paid') return res.json({ ok: true, already: true });
+  if (w.status !== 'transferring') return res.status(400).json({ error: '当前状态无法确认收款' });
+
+  db.prepare(`UPDATE withdrawals SET status='paid' WHERE id=?`).run(w.id);
+  // 此刻才真正从 locked_balance 出账（之前一直锁着，对账可追溯）
+  balance.consume(w.user_id, w.amount, {
+    type: 'withdraw_paid',
+    ref_type: 'withdrawal',
+    ref_id: w.id,
+    note: w.out_trade_no ? `提现到账 ${w.out_trade_no}` : '提现到账',
+  });
+  res.json({ ok: true });
+});
+
 // 用户取消尚未处理的提现：解冻金额回到可用余额
 router.post('/withdrawals/:id/cancel', authRequired, (req, res) => {
   const w = db.prepare('SELECT * FROM withdrawals WHERE id=? AND user_id=?').get(req.params.id, req.user.id);

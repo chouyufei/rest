@@ -330,6 +330,10 @@ router.post('/withdrawals/:id/mark-paid', async (req, res) => {
 
   let actualTradeNo = out_trade_no || null;
   let transferNote = '';
+  let packageInfo = null;
+  let transferBillNo = null;
+  let finalStatus = 'paid';
+  let shouldConsume = true;
 
   if (mode !== 'manual' && w.method === 'wechat') {
     // 尝试微信商家转账
@@ -340,9 +344,17 @@ router.post('/withdrawals/:id/mark-paid', async (req, res) => {
     const result = await transferToWechat(wPayload, user && user.wechat_openid);
     if (result.ok) {
       actualTradeNo = actualTradeNo || result.transfer_id;
-      transferNote = `微信商家转账已发起 ${result.transfer_id}` + (result.batch_id ? `（批次号 ${result.batch_id}）` : '');
+      packageInfo = result.package_info || null;
+      transferBillNo = result.bill_id || result.batch_id || null;
+      transferNote = `微信商家转账已发起 ${result.transfer_id}` + (transferBillNo ? `（单号 ${transferBillNo}）` : '');
+      if (packageInfo) {
+        // 新单笔转账接口：API 调用成功只代表创建了转账单，资金尚在路上
+        // 需要用户在小程序里 wx.requestMerchantTransfer 确认收款，到账后由
+        // 微信回调 notify_url 把状态推为 SUCCESS，此时才能扣余额。
+        finalStatus = 'transferring';
+        shouldConsume = false;
+      }
     } else if (!result.demo) {
-      // 真实 API 返回错误：不要静默标记成功，保持 approved/pending，把错误返回前端
       console.error('[withdraw] 商家转账 API 调用失败', {
         withdrawalId: w.id,
         http_status: result.http_status,
@@ -358,7 +370,6 @@ router.post('/withdrawals/:id/mark-paid', async (req, res) => {
         wx_detail: result.wx_detail,
       });
     } else {
-      // 缺前置条件（未配置 / SDK 未导出方法 / 用户未绑定 openid）→ 记账 + 透出原因
       console.warn('[withdraw] 商家转账走 demo 分支', { withdrawalId: w.id, reason: result.reason, msg: result.message });
       transferNote = `⚠ ${result.message || '未接入商家转账，需在微信商户后台手工打款'}（reason=${result.reason || 'UNKNOWN'}）`;
     }
@@ -366,17 +377,27 @@ router.post('/withdrawals/:id/mark-paid', async (req, res) => {
     transferNote = '银行卡转账需后台财务线下操作';
   }
 
-  db.prepare(`UPDATE withdrawals SET status='paid', out_trade_no=?, processed_at=?, processed_by=? WHERE id=?`)
-    .run(actualTradeNo, Date.now(), req.user.id, w.id);
-  balance.consume(w.user_id, w.amount, {
-    type: 'withdraw_paid',
-    ref_type: 'withdrawal',
-    ref_id: w.id,
-    note: actualTradeNo ? `提现已打款 ${actualTradeNo}` : '提现已打款',
-  });
-  notify(w.user_id, 'withdraw_paid', '提现处理完成',
-    `您的 ${w.amount} 元提现平台已处理${actualTradeNo ? '（流水号 ' + actualTradeNo + '）' : ''}，资金通常 1-3 个工作日到账`, w.id);
-  res.json({ ok: true, note: transferNote });
+  db.prepare(`
+    UPDATE withdrawals SET status=?, out_trade_no=?, package_info=?, transfer_bill_no=?, processed_at=?, processed_by=?
+    WHERE id=?
+  `).run(finalStatus, actualTradeNo, packageInfo, transferBillNo, Date.now(), req.user.id, w.id);
+
+  if (shouldConsume) {
+    balance.consume(w.user_id, w.amount, {
+      type: 'withdraw_paid',
+      ref_type: 'withdrawal',
+      ref_id: w.id,
+      note: actualTradeNo ? `提现已打款 ${actualTradeNo}` : '提现已打款',
+    });
+  }
+
+  const userMsg = finalStatus === 'transferring'
+    ? `您的 ${w.amount} 元提现已创建商家转账单，请打开小程序「提现记录」点【确认收款】完成到账`
+    : `您的 ${w.amount} 元提现平台已处理${actualTradeNo ? '（流水号 ' + actualTradeNo + '）' : ''}，资金通常 1-3 个工作日到账`;
+  notify(w.user_id, finalStatus === 'transferring' ? 'withdraw_transferring' : 'withdraw_paid',
+    finalStatus === 'transferring' ? '请确认收款' : '提现处理完成',
+    userMsg, w.id);
+  res.json({ ok: true, note: transferNote, status: finalStatus });
 });
 
 module.exports = router;
