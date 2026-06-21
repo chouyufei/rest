@@ -53,9 +53,15 @@ function parseReportInfos() {
   return [{ info_type: '事由', info_content: '凤伯乐平台用户提现' }];
 }
 
-// 用户感知文案（微信收款通知"XX到账"里展示）。1011 通常用"现金转账"。
+// 用户感知文案（微信收款通知"XX到账"里展示）。每个场景允许的枚举不同：
+//   1000 现金营销:  现金奖励 / 现金营销 / 活动奖励
+//   1005 报销:      企业报销 / 报销款
+//   1006 劳务报酬:  劳务报酬
+//   1011 企业转账:  劳务报酬 / 报销款 / 经营奖励 / 企业转账（按业务选）
+// 默认空字符串 → 不带这个字段，让微信使用通用通知；
+// 通过 WECHAT_TRANSFER_RECV_PERCEPTION 显式配置后才带。
 function getRecvPerception() {
-  return process.env.WECHAT_TRANSFER_RECV_PERCEPTION || '现金转账';
+  return process.env.WECHAT_TRANSFER_RECV_PERCEPTION || '';
 }
 
 // 拉一次微信平台证书，拿公钥 + serial 用于敏感字段加密
@@ -81,8 +87,9 @@ async function transferBillToWechat(withdrawal, openid, sceneId) {
     transfer_amount: totalFen,
     transfer_remark: `凤伯乐 #${withdrawal.id}`,
     transfer_scene_report_infos: parseReportInfos(),
-    user_recv_perception: getRecvPerception(),
   };
+  const perception = getRecvPerception();
+  if (perception) payload.user_recv_perception = perception;
   if (process.env.WECHAT_TRANSFER_NOTIFY_URL) {
     payload.notify_url = process.env.WECHAT_TRANSFER_NOTIFY_URL;
   }
