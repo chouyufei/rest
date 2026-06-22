@@ -152,8 +152,6 @@ const {
   notifyPlatformOnDeal,
 } = require('./notification');
 
-const ANTI_SNIPE_WINDOW_MS = 5 * 60 * 1000; // 最后一次报价后静默此时长即成交
-
 // 统一保证金：所有三类（发布货源 / 发起求购 / 参与报价）固定一笔，
 // 后台 settings.deposit_amount 可改。原签名 (type, qty) 保留兼容旧调用点。
 function computeDepositAmount(/* type, qty */) {
@@ -203,7 +201,7 @@ function placeBidTx(resourceId, bidderId, price, isAuto = 0, maxPrice = null) {
 
   const prevBidder = resource.current_bidder_id;
 
-  // 软关闭：每次报价刷新 last_bid_at。静默满 ANTI_SNIPE_WINDOW_MS 即成交（见 closeAuction）。
+  // 每次报价刷新 last_bid_at（记录用，参与排序 / 展示）。
   db.prepare(`
     UPDATE resources
     SET current_price = ?, current_bidder_id = ?, last_bid_at = ?
@@ -253,19 +251,10 @@ function closeAuction(resourceId, force = false) {
   if (!r || r.status !== 'auctioning') return;
   const now = Date.now();
 
-  // 软关闭规则：
-  //  - 有报价：最后一次报价后静默满 5 分钟即成交（不必等到计划结束时间）；
-  //    只要有人在 5 分钟内继续报价就一直顺延（无限防狙击）。
-  //  - 无报价：到计划结束时间即未成交。
-  //  - force=true：发布方手动确认成交，跳过静默检查直接按当前最高价成交。
-  if (!force) {
-    if (r.current_bidder_id) {
-      const lastBid = r.last_bid_at || r.start_at;
-      if (now - lastBid < ANTI_SNIPE_WINDOW_MS) return;
-    } else {
-      if (now < r.end_at) return;
-    }
-  }
+  // 关闭规则：
+  //  - 到了 end_at（订单有效期到期）：按当前最优报价成交，没人报价则未成交。
+  //  - force=true：发布方手动确认成交，跳过时间检查直接按当前最高价成交。
+  if (!force && now < r.end_at) return;
 
   const isSupply = (r.kind || 'supply') === 'supply';
 
@@ -308,15 +297,11 @@ function closeAuction(resourceId, force = false) {
 function sweep() {
   const now = Date.now();
   db.prepare(`UPDATE resources SET status='auctioning' WHERE status='draft' AND start_at <= ?`).run(now);
-  // 候选：到计划结束时间（用于无人报价未成交），或已有报价且静默满 5 分钟（软关闭成交）。
-  const silenceCutoff = now - ANTI_SNIPE_WINDOW_MS;
+  // 候选：到达 end_at（订单有效期到期）的资源；有报价则按最优成交，没报价则未成交
   const expired = db.prepare(`
     SELECT id FROM resources
-    WHERE status='auctioning' AND (
-      (current_bidder_id IS NULL AND end_at <= ?) OR
-      (current_bidder_id IS NOT NULL AND COALESCE(last_bid_at, start_at) <= ?)
-    )
-  `).all(now, silenceCutoff);
+    WHERE status='auctioning' AND end_at <= ?
+  `).all(now);
   for (const row of expired) closeAuction(row.id);
 
   const AUTO_CONFIRM_DAYS = Number(process.env.AUTO_CONFIRM_DAYS) || 3;
@@ -353,5 +338,4 @@ module.exports = {
   settleOrderDeposits,
   releaseResourceDeposits,
   reconcileLegacyDeposits,
-  ANTI_SNIPE_WINDOW_MS,
 };
