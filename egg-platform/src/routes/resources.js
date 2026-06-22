@@ -173,7 +173,7 @@ router.post('/', authRequired, (req, res) => {
     title, region, province, chicken_breed, farm_size, egg_color, weight_spec, shell_quality,
     freshness_days, quantity, photos, description, start_price, min_increment,
     duration_hours, unit_label, unit_size, intro_video, defect_rate, defect_note,
-    pack_size, yolk_color, yolk_shade,
+    pack_size, yolk_color, yolk_shade, truck_type,
   } = req.body;
 
   if (!title || !start_price || !quantity || !duration_hours) {
@@ -199,8 +199,8 @@ router.post('/', authRequired, (req, res) => {
       farm_id, title, region, province, chicken_breed, farm_size, egg_color, weight_spec, shell_quality,
       freshness_days, quantity, photos, description, start_price, min_increment, current_price,
       start_at, end_at, status, created_at, kind, unit_label, unit_size, intro_video,
-      defect_rate, defect_note, pack_size, yolk_color, yolk_shade, lat, lng, review_status
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved')
+      defect_rate, defect_note, pack_size, yolk_color, yolk_shade, truck_type, lat, lng, review_status
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved')
   `).run(
     req.user.id, title, region || req.user.region, province || null,
     chicken_breed, farm_size, egg_color, weight_spec, shell_quality,
@@ -212,6 +212,7 @@ router.post('/', authRequired, (req, res) => {
     pack_size != null && pack_size !== '' ? Number(pack_size) : null,
     yolk_color || null,
     yolk_shade || null,
+    truck_type || null,
     snapLat, snapLng,
   );
 
