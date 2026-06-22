@@ -10,8 +10,8 @@ const router = express.Router();
 function withdrawRules() {
   return {
     min_amount: Number(settings.get('withdraw_min_amount')) || 1,
-    processing_hours: Number(settings.get('withdraw_processing_hours')) || 24,
-    arrival_hours: Number(settings.get('withdraw_arrival_hours')) || 72,
+    processing_hours: Number(settings.get('withdraw_processing_hours')) || 1,
+    arrival_hours: Number(settings.get('withdraw_arrival_hours')) || 2,
     fee_pct: Number(settings.get('withdraw_fee_pct')) || 0,
     window: String(settings.get('withdraw_window') || '工作日 09:00-18:00'),
     methods: {

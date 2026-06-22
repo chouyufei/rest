@@ -393,7 +393,7 @@ router.post('/withdrawals/:id/mark-paid', async (req, res) => {
 
   const userMsg = finalStatus === 'transferring'
     ? `您的 ${w.amount} 元提现已创建商家转账单，请打开小程序「提现记录」点【确认收款】完成到账`
-    : `您的 ${w.amount} 元提现平台已处理${actualTradeNo ? '（流水号 ' + actualTradeNo + '）' : ''}，资金通常 1-3 个工作日到账`;
+    : `您的 ${w.amount} 元提现平台已处理${actualTradeNo ? '（流水号 ' + actualTradeNo + '）' : ''}，微信零钱通常实时到账、银行卡 2 小时内到账`;
   notify(w.user_id, finalStatus === 'transferring' ? 'withdraw_transferring' : 'withdraw_paid',
     finalStatus === 'transferring' ? '请确认收款' : '提现处理完成',
     userMsg, w.id);
