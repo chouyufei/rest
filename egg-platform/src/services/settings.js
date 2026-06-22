@@ -40,7 +40,7 @@ const DEFAULTS = {
   withdraw_processing_hours: 1,             // 审核处理时长 (小时，新流程基本实时)
   withdraw_arrival_hours: 2,                // 审核通过后到账时长 (小时)
   withdraw_fee_pct: 0,                      // 提现手续费百分比 (0 = 免手续费)
-  withdraw_window: '工作日 09:00-18:00',     // 受理时段说明
+  withdraw_window: '7×24 小时',              // 受理时段说明（即时提现，全天候）
 };
 
 function get(key) {

@@ -13,7 +13,7 @@ function withdrawRules() {
     processing_hours: Number(settings.get('withdraw_processing_hours')) || 1,
     arrival_hours: Number(settings.get('withdraw_arrival_hours')) || 2,
     fee_pct: Number(settings.get('withdraw_fee_pct')) || 0,
-    window: String(settings.get('withdraw_window') || '工作日 09:00-18:00'),
+    window: String(settings.get('withdraw_window') || '7×24 小时'),
     methods: {
       wechat: {
         max_per_request: Number(settings.get('withdraw_wechat_max_per_request')) || 200,
@@ -106,8 +106,11 @@ router.get('/transactions', authRequired, (req, res) => {
   res.json({ transactions: list.map(enrichTransaction) });
 });
 
-// 提现申请：从可用余额扣到 locked_balance，等待管理员审核打款
-router.post('/withdrawals', authRequired, (req, res) => {
+// 提现申请：从可用余额扣到 locked_balance
+// 微信零钱方式：立即调商家转账 API，把 package_info 返回给小程序，
+//   小程序拉起 wx.requestMerchantTransfer 即时到账
+// 银行卡方式：留 pending，由管理员审核后人工打款
+router.post('/withdrawals', authRequired, async (req, res) => {
   const { amount, method, account_name, account_no, bank_name } = req.body;
   const amt = Number(amount);
   const rules = withdrawRules();
@@ -155,7 +158,46 @@ router.post('/withdrawals', authRequired, (req, res) => {
     note: `提现冻结 #${info.lastInsertRowid}`,
   });
 
-  const w = db.prepare('SELECT * FROM withdrawals WHERE id=?').get(info.lastInsertRowid);
+  let w = db.prepare('SELECT * FROM withdrawals WHERE id=?').get(info.lastInsertRowid);
+
+  // 微信零钱：用户提交后立即调商家转账，把 package_info 一并返回，
+  // 小程序直接拉起 wx.requestMerchantTransfer 即时到账，无需管理员人工审核。
+  if (method === 'wechat') {
+    try {
+      const user = db.prepare('SELECT id, name, wechat_openid FROM users WHERE id=?').get(req.user.id);
+      const { transferToWechat } = require('../services/wechat-transfer');
+      const wPayload = { ...w, _user_name: (user && user.name) || '' };
+      const result = await transferToWechat(wPayload, user && user.wechat_openid);
+      if (result.ok) {
+        const newStatus = result.package_info ? 'transferring' : 'paid';
+        db.prepare(`
+          UPDATE withdrawals
+          SET status=?, out_trade_no=?, package_info=?, transfer_bill_no=?, processed_at=?
+          WHERE id=?
+        `).run(newStatus, result.transfer_id || null, result.package_info || null,
+               result.bill_id || result.batch_id || null, Date.now(), w.id);
+        if (newStatus === 'paid') {
+          // 老批次接口直接到账（无 package_info），立即扣余额
+          balance.consume(req.user.id, amt, {
+            type: 'withdraw_paid',
+            ref_type: 'withdrawal',
+            ref_id: w.id,
+            note: `提现到账 ${result.transfer_id || ''}`,
+          });
+        }
+        w = db.prepare('SELECT * FROM withdrawals WHERE id=?').get(w.id);
+      } else if (!result.demo) {
+        // 真实接口报错：保留 pending 让管理员看到 + 把 wx_code/message 透到前端
+        console.error('[withdraw] 微信即时转账失败', {
+          withdrawalId: w.id, wx_code: result.wx_code, wx_message: result.wx_message,
+        });
+      }
+      // demo 分支 / 用户没 openid：保留 pending，由管理员后台处理
+    } catch (e) {
+      console.error('[withdraw] 转账异常', e);
+    }
+  }
+
   res.json({ ok: true, withdrawal: w });
 });
 
