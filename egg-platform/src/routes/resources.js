@@ -177,10 +177,10 @@ router.post('/', authRequired, (req, res) => {
   } = req.body;
 
   if (!title || !start_price || !quantity || !duration_hours) {
-    return res.status(400).json({ error: '请填写必填项：标题/起报价/数量/报价时长' });
+    return res.status(400).json({ error: '请填写必填项：标题/起报价/数量/订单有效期' });
   }
   const dh = Number(duration_hours);
-  if (![1, 2, 3].includes(dh)) return res.status(400).json({ error: '报价时长仅支持 1/2/3 小时' });
+  if (![0.5, 1, 1.5].includes(dh)) return res.status(400).json({ error: '订单有效期仅支持 0.5 / 1 / 1.5 小时' });
   const inc = Number(min_increment) || 1;
   if (inc < 0.5) return res.status(400).json({ error: '加价/降价幅度不能低于 0.5 元' });
 
