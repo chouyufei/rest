@@ -337,6 +337,35 @@ addColumnIfMissing('withdrawals', 'transfer_bill_no', 'transfer_bill_no TEXT'); 
   `);
 })();
 
+// 一次性修正：旧版 releaseAndCredit() 对 from_balance=1 的保证金也走 credit()，
+// 导致解冻一次相当于"加钱"，账户余额被虚增。把所有"新模型保证金 + deposit_release"
+// 流水的金额从 users.balance 里减回来。
+(function fixHistoricalDepositReleaseOvercredit() {
+  const flag = db.prepare("SELECT value FROM app_settings WHERE key='_fix_deposit_release_overcredit_v1'").get();
+  if (flag) return;
+  const rows = db.prepare(`
+    SELECT bt.user_id, SUM(bt.amount) AS total
+    FROM balance_transactions bt
+    JOIN deposits d ON bt.ref_id = d.id
+    WHERE bt.type='deposit_release' AND bt.ref_type='deposit'
+      AND COALESCE(d.from_balance, 0) = 1
+      AND bt.amount > 0
+    GROUP BY bt.user_id
+    HAVING total > 0
+  `).all();
+  for (const t of rows) {
+    const u = db.prepare('SELECT balance FROM users WHERE id=?').get(t.user_id);
+    if (!u) continue;
+    const newBal = Math.max(0, Number(u.balance) - Number(t.total));
+    db.prepare('UPDATE users SET balance=? WHERE id=?').run(newBal, t.user_id);
+    console.log(`[migrate] user ${t.user_id} balance ${u.balance} - 误增 ${t.total} → ${newBal}`);
+  }
+  db.prepare(`
+    INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)
+    ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+  `).run('_fix_deposit_release_overcredit_v1', JSON.stringify(true), Date.now());
+})();
+
 // 一次性修正：旧版 balance.consume() 只扣了 locked_balance，没扣 balance；
 // 把每个用户的历史「withdraw_paid」金额从 balance 里补减回去，使数据归正。
 (function fixHistoricalWithdrawPaidBalance() {

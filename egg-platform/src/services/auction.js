@@ -2,21 +2,41 @@ const db = require('../db');
 const settings = require('./settings');
 const balance = require('./balance');
 
-// 把一组保证金（按 SQL 条件查得）释放并自动入账到用户余额
+// 把一组保证金（按 SQL 条件查得）按"模型"释放：
+//   - from_balance=1（钱包冻结模型）→ balance.unlock：balance 不变，locked - amount
+//   - from_balance=0（老的微信支付外充模型）→ balance.credit：balance + amount
 // 已 released/deducted 的会被 WHERE 过滤掉；balance_transactions 表的
-// dedup 检查避免万一重复入账
+// dedup 检查避免万一重复入账。
 function releaseAndCredit(whereClause, ...params) {
   const rows = db.prepare(`SELECT * FROM deposits WHERE status IN ('available','frozen') AND ${whereClause}`).all(...params);
   for (const dep of rows) {
     db.prepare(`UPDATE deposits SET status='released', released_at=? WHERE id=?`).run(Date.now(), dep.id);
-    const dup = db.prepare(`SELECT id FROM balance_transactions WHERE type='deposit_release' AND ref_type='deposit' AND ref_id=?`).get(dep.id);
+    const fromBalance = Number(dep.from_balance) === 1;
+    const txType = fromBalance ? 'deposit_unlock' : 'deposit_release';
+    const dup = db.prepare(`SELECT id FROM balance_transactions WHERE type=? AND ref_type='deposit' AND ref_id=?`).get(txType, dep.id);
     if (dup) continue;
-    balance.credit(dep.user_id, dep.amount, {
-      type: 'deposit_release',
-      ref_type: 'deposit',
-      ref_id: dep.id,
-      note: `保证金释放 #${dep.id}`,
-    });
+    if (fromBalance) {
+      // 新模型：lock() 时 balance 没变、locked +amt；释放时只 unlock，不能 credit，否则余额翻倍。
+      try {
+        balance.unlock(dep.user_id, dep.amount, {
+          type: 'deposit_unlock',
+          ref_type: 'deposit',
+          ref_id: dep.id,
+          note: `保证金解冻 #${dep.id}`,
+        });
+      } catch (e) {
+        // 冻结余额不足等异常：跳过，避免抛错卡住后续清理
+        console.warn('[releaseAndCredit] unlock 失败', { depositId: dep.id, error: e.message });
+      }
+    } else {
+      // 老模型：钱原本在 deposits 表外，释放时入账钱包。
+      balance.credit(dep.user_id, dep.amount, {
+        type: 'deposit_release',
+        ref_type: 'deposit',
+        ref_id: dep.id,
+        note: `保证金释放 #${dep.id}`,
+      });
+    }
   }
   return rows.length;
 }
