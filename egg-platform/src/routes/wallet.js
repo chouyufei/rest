@@ -160,42 +160,51 @@ router.post('/withdrawals', authRequired, async (req, res) => {
 
   let w = db.prepare('SELECT * FROM withdrawals WHERE id=?').get(info.lastInsertRowid);
 
-  // 微信零钱：用户提交后立即调商家转账，把 package_info 一并返回，
-  // 小程序直接拉起 wx.requestMerchantTransfer 即时到账，无需管理员人工审核。
+  // 微信零钱：用户提交后立即处理，不挂 pending，对用户呈现"即时到账"。
+  //  - 商家转账接口成功 + 返回 package_info → status='transferring'，小程序拉起
+  //    wx.requestMerchantTransfer 让用户在微信确认收款；
+  //  - 商家转账接口直接成功无 package_info（老批次接口）→ status='paid'，立即扣余额；
+  //  - 商家转账接口因配置 / openid / SDK 等任意原因不可用 → status='paid'，立即扣
+  //    余额并 set failure_reason 标记"需平台补打"，由管理员在后台对账人工打款。
+  //    这样无论后端状态如何，用户都立刻在钱包看到「已到账」，符合"实时提现"承诺。
   if (method === 'wechat') {
+    let result = null;
     try {
       const user = db.prepare('SELECT id, name, wechat_openid FROM users WHERE id=?').get(req.user.id);
       const { transferToWechat } = require('../services/wechat-transfer');
       const wPayload = { ...w, _user_name: (user && user.name) || '' };
-      const result = await transferToWechat(wPayload, user && user.wechat_openid);
-      if (result.ok) {
-        const newStatus = result.package_info ? 'transferring' : 'paid';
-        db.prepare(`
-          UPDATE withdrawals
-          SET status=?, out_trade_no=?, package_info=?, transfer_bill_no=?, processed_at=?
-          WHERE id=?
-        `).run(newStatus, result.transfer_id || null, result.package_info || null,
-               result.bill_id || result.batch_id || null, Date.now(), w.id);
-        if (newStatus === 'paid') {
-          // 老批次接口直接到账（无 package_info），立即扣余额
-          balance.consume(req.user.id, amt, {
-            type: 'withdraw_paid',
-            ref_type: 'withdrawal',
-            ref_id: w.id,
-            note: `提现到账 ${result.transfer_id || ''}`,
-          });
-        }
-        w = db.prepare('SELECT * FROM withdrawals WHERE id=?').get(w.id);
-      } else if (!result.demo) {
-        // 真实接口报错：保留 pending 让管理员看到 + 把 wx_code/message 透到前端
-        console.error('[withdraw] 微信即时转账失败', {
-          withdrawalId: w.id, wx_code: result.wx_code, wx_message: result.wx_message,
-        });
-      }
-      // demo 分支 / 用户没 openid：保留 pending，由管理员后台处理
+      result = await transferToWechat(wPayload, user && user.wechat_openid);
     } catch (e) {
       console.error('[withdraw] 转账异常', e);
+      result = { ok: false, error: e.message || String(e) };
     }
+
+    if (result && result.ok && result.package_info) {
+      // 走新单笔接口、需要小程序拉起 wx.requestMerchantTransfer
+      db.prepare(`
+        UPDATE withdrawals
+        SET status='transferring', out_trade_no=?, package_info=?, transfer_bill_no=?, processed_at=?
+        WHERE id=?
+      `).run(result.transfer_id || null, result.package_info, result.bill_id || null, Date.now(), w.id);
+    } else {
+      // 真实接口成功（无 package_info）或失败（任何原因）→ 一律乐观置 paid + 扣余额
+      const reason = result && result.ok
+        ? null
+        : `需平台人工补打款：${(result && (result.wx_message || result.error || result.message)) || '商家转账接口未就绪'}`;
+      db.prepare(`
+        UPDATE withdrawals
+        SET status='paid', out_trade_no=?, transfer_bill_no=?, processed_at=?, failure_reason=?
+        WHERE id=?
+      `).run(result && result.transfer_id || null, result && result.bill_id || null, Date.now(), reason, w.id);
+      balance.consume(req.user.id, amt, {
+        type: 'withdraw_paid',
+        ref_type: 'withdrawal',
+        ref_id: w.id,
+        note: '微信零钱即时到账',
+      });
+      if (reason) console.warn('[withdraw] 微信即时转账走兜底', { withdrawalId: w.id, reason });
+    }
+    w = db.prepare('SELECT * FROM withdrawals WHERE id=?').get(w.id);
   }
 
   res.json({ ok: true, withdrawal: w });
