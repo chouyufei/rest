@@ -31,7 +31,7 @@ router.get('/', (req, res) => {
   const nearLng = req.query.near_lng ? Number(req.query.near_lng) : null;
   const useNear = Number.isFinite(nearLat) && Number.isFinite(nearLng);
 
-  let sql = 'SELECT * FROM resources WHERE 1=1';
+  let sql = 'SELECT * FROM resources WHERE deleted_at IS NULL';
   const params = [];
   if (kind) { sql += ' AND kind = ?'; params.push(kind); }
   if (status) { sql += ' AND status = ?'; params.push(status); }
@@ -75,7 +75,7 @@ router.get('/', (req, res) => {
 
 router.get('/mine', authRequired, (req, res) => {
   sweep();
-  const rows = db.prepare('SELECT * FROM resources WHERE farm_id=? ORDER BY created_at DESC').all(req.user.id);
+  const rows = db.prepare('SELECT * FROM resources WHERE farm_id=? AND deleted_at IS NULL ORDER BY created_at DESC').all(req.user.id);
   res.json({ resources: rows.map(enrich) });
 });
 
@@ -259,6 +259,19 @@ router.post('/:id/cancel', authRequired, (req, res) => {
   db.prepare(`UPDATE resources SET status='cancelled' WHERE id=?`).run(r.id);
   // 释放本资源所有保证金 → 入用户余额
   releaseResourceDeposits(r.id);
+  res.json({ ok: true });
+});
+
+// 软删除：发布方在资源未成交 / 已取消时可移除该资源（其他状态不允许，避免破坏成交方账单）
+router.post('/:id/delete', authRequired, (req, res) => {
+  const r = db.prepare('SELECT * FROM resources WHERE id=?').get(req.params.id);
+  if (!r) return res.status(404).json({ error: '资源不存在' });
+  if (r.farm_id !== req.user.id) return res.status(403).json({ error: '只能删除自己的资源' });
+  if (!['failed', 'cancelled'].includes(r.status)) {
+    return res.status(400).json({ error: '仅未成交 / 已取消的资源可删除' });
+  }
+  if (r.deleted_at) return res.json({ ok: true, already: true });
+  db.prepare(`UPDATE resources SET deleted_at=? WHERE id=?`).run(Date.now(), r.id);
   res.json({ ok: true });
 });
 
