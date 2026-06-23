@@ -99,43 +99,56 @@ function lockDepositForResource({ userId, resourceId, type }) {
   return db.prepare('SELECT * FROM deposits WHERE id=?').get(info.lastInsertRowid);
 }
 
-// 订单完成时：仅从卖方（养殖场，order.farm_id）的服务保障金中扣一笔服务费，
-// 买方冻结的保障金全额解冻
+// 订单完成时：
+//  1) 把该资源上所有"新模型"冻结保证金全额解冻（buyer + seller 都各自回各自的可用余额）
+//  2) 从卖方账户直接扣后台设置的 service_fee_amount（不受冻结金额限制；
+//     若余额不足，只扣到 0，不允许负数）
+//  两步都用 balance_transactions 做幂等，重复调用安全
 function settleOrderDeposits(orderId) {
   const order = db.prepare('SELECT * FROM orders WHERE id=?').get(orderId);
   if (!order) return;
   const fee = computeServiceFee();
   const now = Date.now();
-  // 找该资源上仍冻结的、来自钱包的保证金
+
+  // 1) 解冻所有 frozen 保证金
   const rows = db.prepare(`
     SELECT * FROM deposits WHERE resource_id=? AND status='frozen' AND from_balance=1
   `).all(order.resource_id);
   for (const dep of rows) {
-    // 去重：已结算过则跳过
-    const dup = db.prepare(`SELECT id FROM balance_transactions WHERE type='service_fee' AND ref_type='deposit' AND ref_id=?`).get(dep.id);
-    if (dup) continue;
-    // 卖方 = order.farm_id；其它人（买方等）一律全额解冻不扣费
-    const isSeller = dep.user_id === order.farm_id;
-    const actualFee = isSeller ? Math.min(fee, dep.amount) : 0;
-    if (actualFee > 0) {
-      balance.consume(dep.user_id, actualFee, {
+    const dup = db.prepare(`
+      SELECT id FROM balance_transactions
+      WHERE type='deposit_unlock' AND ref_type='deposit' AND ref_id=?
+    `).get(dep.id);
+    if (!dup) {
+      try {
+        balance.unlock(dep.user_id, dep.amount, {
+          type: 'deposit_unlock',
+          ref_type: 'deposit',
+          ref_id: dep.id,
+          note: `订单 #${order.id} 保证金解冻`,
+        });
+      } catch (e) {
+        console.warn('[settleOrderDeposits] unlock 失败', { depositId: dep.id, error: e.message });
+      }
+    }
+    db.prepare(`UPDATE deposits SET status='released', released_at=?, note=? WHERE id=?`)
+      .run(now, `订单 #${order.id} 解冻`, dep.id);
+  }
+
+  // 2) 卖方账户扣服务费（直接 balance -fee；不要求资金一定来自 locked）
+  if (fee > 0 && order.farm_id) {
+    const dupFee = db.prepare(`
+      SELECT id FROM balance_transactions
+      WHERE type='service_fee' AND ref_type='order' AND ref_id=?
+    `).get(order.id);
+    if (!dupFee) {
+      balance.debit(order.farm_id, fee, {
         type: 'service_fee',
         ref_type: 'order',
         ref_id: order.id,
-        note: `订单 #${order.id} 服务费`,
+        note: `订单 #${order.id} 平台服务费`,
       });
     }
-    const rest = dep.amount - actualFee;
-    if (rest > 0) {
-      balance.unlock(dep.user_id, rest, {
-        type: 'deposit_unlock',
-        ref_type: 'order',
-        ref_id: order.id,
-        note: `订单 #${order.id} 保证金解冻`,
-      });
-    }
-    db.prepare(`UPDATE deposits SET status='deducted', released_at=?, note=? WHERE id=?`)
-      .run(now, isSeller ? `已扣服务费 ${actualFee} 元，余 ${rest} 元解冻` : `非卖方，全额解冻`, dep.id);
   }
 }
 

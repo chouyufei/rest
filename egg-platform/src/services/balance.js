@@ -64,10 +64,33 @@ const txUnlock = db.transaction((userId, amount, meta) => {
   return Number(u.balance || 0);
 });
 
+// 直接从总余额扣（不要求资金已在 locked 里）。
+// 用于：订单成交时按"后台设置的服务费"全额扣卖方钱包，无论保障金冻结了多少。
+// 余额不足时只扣到 0（不允许负数），返回实际扣减金额。
+const txPureDebit = db.transaction((userId, amount, meta) => {
+  const u = db.prepare('SELECT balance FROM users WHERE id=?').get(userId);
+  if (!u) throw new Error('用户不存在');
+  const amt = Number(amount);
+  const bal = Number(u.balance || 0);
+  const actual = Math.min(bal, amt);
+  if (actual <= 0) return bal;
+  const newBal = bal - actual;
+  db.prepare('UPDATE users SET balance=? WHERE id=?').run(newBal, userId);
+  db.prepare(`
+    INSERT INTO balance_transactions
+      (user_id, amount, type, ref_type, ref_id, balance_after, note, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(userId, -actual, meta.type, meta.ref_type || null, meta.ref_id || null, newBal,
+    actual < amt ? `${meta.note || ''}（按余额上限扣 ${actual}/${amt}）` : (meta.note || null),
+    Date.now());
+  return newBal;
+});
+
 function credit(userId, amount, meta) { return txCredit(userId, amount, meta); }
 function lock(userId, amount, meta)    { return txDebit(userId, amount, { ...meta, from_locked: false }); }
 function consume(userId, amount, meta) { return txDebit(userId, amount, { ...meta, from_locked: true }); }
 function unlock(userId, amount, meta)  { return txUnlock(userId, amount, meta); }
+function debit(userId, amount, meta)   { return txPureDebit(userId, amount, meta); }
 
 function getBalance(userId) {
   const u = db.prepare('SELECT balance, locked_balance FROM users WHERE id=?').get(userId);
@@ -84,4 +107,4 @@ function getTransactions(userId, { limit = 50, offset = 0 } = {}) {
   `).all(userId, limit, offset);
 }
 
-module.exports = { credit, lock, consume, unlock, getBalance, getTransactions };
+module.exports = { credit, lock, consume, unlock, debit, getBalance, getTransactions };

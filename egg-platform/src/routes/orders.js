@@ -89,8 +89,10 @@ router.post('/:id/confirm', authRequired, (req, res) => {
   if (o.status === 'completed') return res.json({ ok: true });
   if (o.status === 'disputed') return res.status(400).json({ error: '订单存在纠纷，请先处理' });
   db.prepare(`UPDATE orders SET status='completed', confirmed_at=? WHERE id=?`).run(Date.now(), o.id);
-  releaseDeposits(o.id);          // 旧模型：保证金 release 入账
-  settleOrderDeposits(o.id);       // 新模型：扣服务费 + 解冻余款回钱包
+  // 必须先 settle（新模型解冻 + 扣服务费），否则 releaseDeposits 会先把所有冻结
+  // 释放掉，settle 再扫 frozen 状态就空了，服务费永远扣不到。
+  settleOrderDeposits(o.id);       // 新模型：解冻 buyer+seller 冻结金 + 从卖方账户直扣服务费
+  releaseDeposits(o.id);           // 老模型遗留兜底（status=available 之类）
   notify(o.farm_id, 'order_completed', '交易完成', `订单 #${o.id} 已确认收货，保证金已扣服务费并解冻余款`, o.id);
   res.json({ ok: true });
 });
