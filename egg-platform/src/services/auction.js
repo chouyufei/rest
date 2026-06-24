@@ -75,7 +75,8 @@ function lockDepositForResource({ userId, resourceId, type }) {
 
   const amount = computeDepositAmount();
   const { available } = balance.getBalance(userId);
-  if (available < amount) {
+  // 浮点对比要按分（整数）算，避免 1.00 vs 1 被判成"差 0.00 元"
+  if (Math.round(available * 100) < Math.round(amount * 100)) {
     const e = new Error(`钱包可用余额不足，需 ${amount} 元，当前可用 ${available.toFixed(2)} 元`);
     e.code = 'INSUFFICIENT_BALANCE';
     e.required = amount;
