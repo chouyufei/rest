@@ -19,6 +19,42 @@ const hasAllPayEnv = !!(WECHAT_APP_ID && WECHAT_MCH_ID && WECHAT_API_V3_KEY &&
   WECHAT_SERIAL_NO && WECHAT_PRIVATE_KEY && WECHAT_PUBLIC_KEY && WECHAT_NOTIFY_URL);
 
 let pay = null;
+let lastCertError = '';  // 启动 / 手动刷新时拉平台证书失败的最近一次原因，便于排查
+async function tryFetchCerts(tag = 'init') {
+  if (!pay) return;
+  // SDK 的 get_certificates 在非 2xx 时只抛 "拉取平台证书失败"，丢了 HTTP 细节。
+  // 这里手动重跑同样的请求，把 status / body 打出来，便于定位 401 / 403 / 签名错。
+  try {
+    const url = 'https://api.mch.weixin.qq.com/v3/certificates';
+    const authorization = pay.buildAuthorization('GET', url);
+    const headers = pay.getHeaders(authorization, { 'Content-Type': 'application/json' });
+    const result = await pay.httpService.get(url, headers);
+    if (result && result.status === 200) {
+      // 走原 SDK 路径解密 + 缓存
+      await pay.get_certificates(WECHAT_API_V3_KEY);
+      lastCertError = '';
+      console.log(`[${tag}] 平台证书拉取成功`);
+      return { ok: true };
+    }
+    let wxCode = '', wxMessage = '';
+    if (result && result.error) {
+      try {
+        const parsed = typeof result.error === 'string' ? JSON.parse(result.error) : result.error;
+        wxCode = parsed.code || '';
+        wxMessage = parsed.message || '';
+      } catch (e) { wxMessage = String(result.error).slice(0, 300); }
+    }
+    lastCertError = `HTTP ${result && result.status} [${wxCode}] ${wxMessage}`;
+    console.warn(`[${tag}] 平台证书拉取失败：${lastCertError}` +
+      `（常见原因：WECHAT_API_V3_KEY 错 / WECHAT_SERIAL_NO 与商户证书不匹配 / WECHAT_PRIVATE_KEY 换行被吞）`);
+    return { ok: false, http_status: result && result.status, wx_code: wxCode, wx_message: wxMessage };
+  } catch (e) {
+    lastCertError = e.message || String(e);
+    console.warn(`[${tag}] 平台证书拉取异常：${lastCertError}`);
+    return { ok: false, error: lastCertError };
+  }
+}
+
 if (hasAllPayEnv) {
   try {
     const mod = require('wechatpay-node-v3');
@@ -32,9 +68,7 @@ if (hasAllPayEnv) {
       key: WECHAT_API_V3_KEY,
     });
     console.log('微信支付已启用 mch_id=' + WECHAT_MCH_ID + ' serial_no=' + WECHAT_SERIAL_NO.slice(0, 12) + '…');
-    pay.get_certificates(WECHAT_API_V3_KEY)
-      .then((certs) => console.log('已预热平台证书 ' + (certs && certs.length) + ' 张'))
-      .catch((e) => console.warn('预热平台证书失败（首次回调时会自动拉取）:', e.message));
+    tryFetchCerts('init');
   } catch (e) {
     console.error('微信支付 SDK 初始化失败:', e.message);
     pay = null;
@@ -200,6 +234,20 @@ router.post('/recharge', authRequired, async (req, res) => {
   }
 });
 
+// 调试用：管理员手动刷新平台证书 + 看上次失败原因
+router.get('/wechat-pay-check', async (req, res) => {
+  if (!pay) return res.json({ enabled: false, reason: '环境变量未配齐，pay 未初始化' });
+  const r = await tryFetchCerts('manual');
+  res.json({
+    enabled: true,
+    mch_id: WECHAT_MCH_ID,
+    serial_no: WECHAT_SERIAL_NO,
+    notify_url: WECHAT_NOTIFY_URL,
+    last_cert_error: lastCertError || null,
+    fetch: r,
+  });
+});
+
 router.post('/notify', async (req, res) => {
   if (!pay) return res.status(503).json({ code: 'FAIL', message: '支付未启用' });
 
@@ -217,6 +265,15 @@ router.post('/notify', async (req, res) => {
       apiSecret: WECHAT_API_V3_KEY,
     });
   } catch (e) {
+    // SDK 抛 "拉取平台证书失败" 时，跑一次 tryFetchCerts 把真实 HTTP 错误打出来
+    if (/拉取平台证书失败/.test(e.message || '')) {
+      await tryFetchCerts('notify');
+      console.error('回调验签异常:', e.message, '|| 平台证书原始错误:', lastCertError);
+      return res.status(401).json({
+        code: 'FAIL',
+        message: '验签失败：' + e.message + (lastCertError ? '（' + lastCertError + '）' : ''),
+      });
+    }
     console.error('回调验签异常:', e.message);
     return res.status(401).json({ code: 'FAIL', message: '验签失败: ' + e.message });
   }

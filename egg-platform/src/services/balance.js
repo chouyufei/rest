@@ -66,22 +66,20 @@ const txUnlock = db.transaction((userId, amount, meta) => {
 
 // 直接从总余额扣（不要求资金已在 locked 里）。
 // 用于：订单成交时按"后台设置的服务费"全额扣卖方钱包，无论保障金冻结了多少。
-// 余额不足时只扣到 0（不允许负数），返回实际扣减金额。
+// 余额不足时允许扣到负数（平台对该用户的应收账款），由 admin 后台对账后补回。
 const txPureDebit = db.transaction((userId, amount, meta) => {
   const u = db.prepare('SELECT balance FROM users WHERE id=?').get(userId);
   if (!u) throw new Error('用户不存在');
   const amt = Number(amount);
   const bal = Number(u.balance || 0);
-  const actual = Math.min(bal, amt);
-  if (actual <= 0) return bal;
-  const newBal = bal - actual;
+  const newBal = bal - amt;
   db.prepare('UPDATE users SET balance=? WHERE id=?').run(newBal, userId);
   db.prepare(`
     INSERT INTO balance_transactions
       (user_id, amount, type, ref_type, ref_id, balance_after, note, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(userId, -actual, meta.type, meta.ref_type || null, meta.ref_id || null, newBal,
-    actual < amt ? `${meta.note || ''}（按余额上限扣 ${actual}/${amt}）` : (meta.note || null),
+  `).run(userId, -amt, meta.type, meta.ref_type || null, meta.ref_id || null, newBal,
+    newBal < 0 ? `${meta.note || ''}（余额不足，记账后透支 ${(-newBal).toFixed(2)} 元待对账）` : (meta.note || null),
     Date.now());
   return newBal;
 });
