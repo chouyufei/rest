@@ -1,6 +1,6 @@
 const express = require('express');
 const db = require('../db');
-const { authRequired, roleRequired } = require('../middleware/auth');
+const { authRequired } = require('../middleware/auth');
 const { placeBidTx, triggerAutoBids, lockDepositForResource } = require('../services/auction');
 const balance = require('../services/balance');
 
@@ -12,8 +12,12 @@ router.post('/', authRequired, (req, res) => {
   const r = db.prepare('SELECT * FROM resources WHERE id=?').get(Number(resource_id));
   if (!r) return res.status(404).json({ error: '资源不存在' });
   const isSupply = (r.kind || 'supply') === 'supply';
-  if (isSupply && req.user.role !== 'buyer') return res.status(403).json({ error: '货源仅限采购商报价' });
-  if (!isSupply && req.user.role !== 'farm') return res.status(403).json({ error: '求购仅限养殖场应标' });
+  if (r.farm_id === req.user.id) return res.status(403).json({ error: '不能参与自己发布的报价' });
+  // 货源出价：任何登录用户均可（不再限 role）
+  // 求购需求应标：仅资质认证通过的鸡场可参与
+  if (!isSupply && req.user.license_status !== 'approved') {
+    return res.status(403).json({ error: '应标求购需求需先完成鸡场资质认证（养殖场资质）' });
+  }
   // 首次报价：自动从钱包冻结一笔服务保障金
   try {
     lockDepositForResource({ userId: req.user.id, resourceId: Number(resource_id), type: 'buyer_bid' });
@@ -31,7 +35,7 @@ router.post('/', authRequired, (req, res) => {
   }
 });
 
-router.post('/auto', authRequired, roleRequired('buyer'), (req, res) => {
+router.post('/auto', authRequired, (req, res) => {
   const { resource_id, max_price } = req.body;
   if (!resource_id || !max_price) return res.status(400).json({ error: '缺少参数' });
   const r = db.prepare('SELECT * FROM resources WHERE id=?').get(resource_id);
@@ -58,7 +62,7 @@ router.post('/auto', authRequired, roleRequired('buyer'), (req, res) => {
   res.json({ ok: true });
 });
 
-router.delete('/auto/:resource_id', authRequired, roleRequired('buyer'), (req, res) => {
+router.delete('/auto/:resource_id', authRequired, (req, res) => {
   db.prepare('UPDATE auto_bids SET active=0 WHERE resource_id=? AND bidder_id=?')
     .run(req.params.resource_id, req.user.id);
   res.json({ ok: true });
