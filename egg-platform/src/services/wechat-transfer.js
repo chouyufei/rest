@@ -13,6 +13,9 @@ const isConfigured = !!(WECHAT_APP_ID && WECHAT_MCH_ID);
 
 let pay = null;
 let sdkInitError = null;
+const WECHAT_PLATFORM_PUBLIC_KEY    = process.env.WECHAT_PLATFORM_PUBLIC_KEY    || '';
+const WECHAT_PLATFORM_PUBLIC_KEY_ID = process.env.WECHAT_PLATFORM_PUBLIC_KEY_ID || '';
+const usePublicKeyMode = !!(WECHAT_PLATFORM_PUBLIC_KEY && WECHAT_PLATFORM_PUBLIC_KEY_ID);
 try {
   const mod = require('wechatpay-node-v3');
   const WxPay = mod.default || mod;
@@ -25,6 +28,15 @@ try {
       privateKey: Buffer.from(process.env.WECHAT_PRIVATE_KEY || ''),
       key: process.env.WECHAT_API_V3_KEY,
     });
+    // 微信支付公钥模式：把公钥灌进 SDK 静态字典，敏感字段加密直接用它
+    if (usePublicKeyMode) {
+      const pem = WECHAT_PLATFORM_PUBLIC_KEY.includes('-----BEGIN')
+        ? WECHAT_PLATFORM_PUBLIC_KEY
+        : `-----BEGIN PUBLIC KEY-----\n${WECHAT_PLATFORM_PUBLIC_KEY}\n-----END PUBLIC KEY-----`;
+      WxPay.certificates = Object.assign({}, WxPay.certificates || {}, {
+        [WECHAT_PLATFORM_PUBLIC_KEY_ID]: pem,
+      });
+    }
   }
 } catch (e) {
   pay = null;
@@ -64,12 +76,19 @@ function getRecvPerception() {
   return process.env.WECHAT_TRANSFER_RECV_PERCEPTION || '';
 }
 
-// 拉一次微信平台证书，拿公钥 + serial 用于敏感字段加密
+// 拿公钥 + serial 用于敏感字段加密
+//  - 公钥模式：直接用 env 配的微信支付公钥 + 公钥 ID
+//  - 旧证书模式：调 /v3/certificates 拉一次
 async function loadPlatformCert() {
   if (!pay) throw new Error('SDK 未初始化');
+  if (usePublicKeyMode) {
+    const pem = WECHAT_PLATFORM_PUBLIC_KEY.includes('-----BEGIN')
+      ? WECHAT_PLATFORM_PUBLIC_KEY
+      : `-----BEGIN PUBLIC KEY-----\n${WECHAT_PLATFORM_PUBLIC_KEY}\n-----END PUBLIC KEY-----`;
+    return { publicKey: pem, serial_no: WECHAT_PLATFORM_PUBLIC_KEY_ID };
+  }
   const certs = await pay.get_certificates(process.env.WECHAT_API_V3_KEY);
   if (!Array.isArray(certs) || !certs.length) throw new Error('微信平台证书拉取失败');
-  // 选最新一张（serial 字典序倒序）
   const sorted = [...certs].sort((a, b) => (b.serial_no || '').localeCompare(a.serial_no || ''));
   return sorted[0];
 }

@@ -14,14 +14,46 @@ const WECHAT_SERIAL_NO = process.env.WECHAT_SERIAL_NO || '';
 const WECHAT_PRIVATE_KEY = process.env.WECHAT_PRIVATE_KEY || '';
 const WECHAT_PUBLIC_KEY = process.env.WECHAT_PUBLIC_KEY || '';
 const WECHAT_NOTIFY_URL = process.env.WECHAT_NOTIFY_URL || '';
+// 新签约商户走「微信支付公钥模式」：商户后台下载一个公钥 PEM + 公钥 ID，
+// 不再有传统平台证书。配上以下两个 env 后，验签直接用这个公钥，
+// 跳过 GET /v3/certificates（那个接口会返 404 RESOURCE_NOT_EXISTS）。
+const WECHAT_PLATFORM_PUBLIC_KEY    = process.env.WECHAT_PLATFORM_PUBLIC_KEY    || '';
+const WECHAT_PLATFORM_PUBLIC_KEY_ID = process.env.WECHAT_PLATFORM_PUBLIC_KEY_ID || '';
+const usePublicKeyMode = !!(WECHAT_PLATFORM_PUBLIC_KEY && WECHAT_PLATFORM_PUBLIC_KEY_ID);
 
 const hasAllPayEnv = !!(WECHAT_APP_ID && WECHAT_MCH_ID && WECHAT_API_V3_KEY &&
   WECHAT_SERIAL_NO && WECHAT_PRIVATE_KEY && WECHAT_PUBLIC_KEY && WECHAT_NOTIFY_URL);
 
 let pay = null;
-let lastCertError = '';  // 启动 / 手动刷新时拉平台证书失败的最近一次原因，便于排查
+let lastCertError = '';
+
+// 微信支付公钥模式：手动把公钥灌进 SDK 的 Pay.certificates 静态字典，
+// verifySign 会按 serial 查到这个 PEM 直接验签，跳过 fetchCertificates。
+function primePublicKey(WxPayClass) {
+  if (!usePublicKeyMode) return false;
+  try {
+    const pem = WECHAT_PLATFORM_PUBLIC_KEY.includes('-----BEGIN')
+      ? WECHAT_PLATFORM_PUBLIC_KEY
+      : `-----BEGIN PUBLIC KEY-----\n${WECHAT_PLATFORM_PUBLIC_KEY}\n-----END PUBLIC KEY-----`;
+    WxPayClass.certificates = Object.assign({}, WxPayClass.certificates || {}, {
+      [WECHAT_PLATFORM_PUBLIC_KEY_ID]: pem,
+    });
+    console.log(`[init] 微信支付公钥模式已启用，公钥 ID=${WECHAT_PLATFORM_PUBLIC_KEY_ID}`);
+    return true;
+  } catch (e) {
+    console.warn('[init] 微信支付公钥灌入失败：' + e.message);
+    return false;
+  }
+}
+
 async function tryFetchCerts(tag = 'init') {
   if (!pay) return;
+  // 公钥模式：跳过 /v3/certificates（新签约商户没有平台证书，会返 404）
+  if (usePublicKeyMode) {
+    lastCertError = '';
+    console.log(`[${tag}] 公钥模式：跳过 /v3/certificates 拉取`);
+    return { ok: true, mode: 'public_key' };
+  }
   // SDK 的 get_certificates 在非 2xx 时只抛 "拉取平台证书失败"，丢了 HTTP 细节。
   // 这里手动重跑同样的请求，把 status / body 打出来，便于定位 401 / 403 / 签名错。
   try {
@@ -30,7 +62,6 @@ async function tryFetchCerts(tag = 'init') {
     const headers = pay.getHeaders(authorization, { 'Content-Type': 'application/json' });
     const result = await pay.httpService.get(url, headers);
     if (result && result.status === 200) {
-      // 走原 SDK 路径解密 + 缓存
       await pay.get_certificates(WECHAT_API_V3_KEY);
       lastCertError = '';
       console.log(`[${tag}] 平台证书拉取成功`);
@@ -45,8 +76,11 @@ async function tryFetchCerts(tag = 'init') {
       } catch (e) { wxMessage = String(result.error).slice(0, 300); }
     }
     lastCertError = `HTTP ${result && result.status} [${wxCode}] ${wxMessage}`;
-    console.warn(`[${tag}] 平台证书拉取失败：${lastCertError}` +
-      `（常见原因：WECHAT_API_V3_KEY 错 / WECHAT_SERIAL_NO 与商户证书不匹配 / WECHAT_PRIVATE_KEY 换行被吞）`);
+    let hint = '（常见原因：WECHAT_API_V3_KEY 错 / WECHAT_SERIAL_NO 与商户证书不匹配 / WECHAT_PRIVATE_KEY 换行被吞）';
+    if (result && result.status === 404 && wxCode === 'RESOURCE_NOT_EXISTS') {
+      hint = '（你的商户号是新签约的"微信支付公钥模式"，没有传统平台证书。请到 商户后台 → API 安全 → 微信支付公钥 下载公钥 + 公钥 ID，配进 .env 的 WECHAT_PLATFORM_PUBLIC_KEY 与 WECHAT_PLATFORM_PUBLIC_KEY_ID 然后重启服务）';
+    }
+    console.warn(`[${tag}] 平台证书拉取失败：${lastCertError}${hint}`);
     return { ok: false, http_status: result && result.status, wx_code: wxCode, wx_message: wxMessage };
   } catch (e) {
     lastCertError = e.message || String(e);
@@ -68,6 +102,7 @@ if (hasAllPayEnv) {
       key: WECHAT_API_V3_KEY,
     });
     console.log('微信支付已启用 mch_id=' + WECHAT_MCH_ID + ' serial_no=' + WECHAT_SERIAL_NO.slice(0, 12) + '…');
+    primePublicKey(WxPay);  // 公钥模式：把公钥直接灌进 SDK 静态字典
     tryFetchCerts('init');
   } catch (e) {
     console.error('微信支付 SDK 初始化失败:', e.message);
@@ -240,9 +275,11 @@ router.get('/wechat-pay-check', async (req, res) => {
   const r = await tryFetchCerts('manual');
   res.json({
     enabled: true,
+    mode: usePublicKeyMode ? 'public_key' : 'certificate',
     mch_id: WECHAT_MCH_ID,
     serial_no: WECHAT_SERIAL_NO,
     notify_url: WECHAT_NOTIFY_URL,
+    public_key_id: usePublicKeyMode ? WECHAT_PLATFORM_PUBLIC_KEY_ID : null,
     last_cert_error: lastCertError || null,
     fetch: r,
   });
