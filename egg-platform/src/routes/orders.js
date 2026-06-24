@@ -21,12 +21,15 @@ function enrich(o) {
 
 router.get('/', authRequired, (req, res) => {
   let rows;
-  if (req.user.role === 'farm') {
-    rows = db.prepare('SELECT * FROM orders WHERE farm_id=? ORDER BY created_at DESC').all(req.user.id);
-  } else if (req.user.role === 'buyer') {
-    rows = db.prepare('SELECT * FROM orders WHERE buyer_id=? ORDER BY created_at DESC').all(req.user.id);
-  } else {
+  if (req.user.role === 'admin') {
     rows = db.prepare('SELECT * FROM orders ORDER BY created_at DESC LIMIT 200').all();
+  } else {
+    // 一个用户同时可能既是卖方（发布货源 / 求购应标）又是买方（参与报价 /
+    // 发布求购）；订单列表统一返回 farm_id 或 buyer_id 任一匹配的全部记录，
+    // 前端按 side（买/卖）打标签区分，不再因主页"切换买卖"而漏单。
+    rows = db.prepare(`
+      SELECT * FROM orders WHERE farm_id=? OR buyer_id=? ORDER BY created_at DESC
+    `).all(req.user.id, req.user.id);
   }
   res.json({ orders: rows.map(enrich) });
 });
