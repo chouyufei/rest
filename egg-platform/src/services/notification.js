@@ -101,8 +101,8 @@ function notifyOrderGroupReady(orderId, buyerId, sellerId, resource) {
   const owner = settings.get('service_qr_owner') || '凤伯乐 · 客服';
   if (!qrUrl) return;  // 后台未上传二维码则不下发
 
-  const title = '📲 添加客服企业微信';
-  const content = `订单 #${orderId}「${resource.title}」已成交。\n请扫码添加 ${owner} 的企业微信，后续发货、对接、纠纷处理会在群里同步。\n买卖双方都加完后，客服将拉建沟通群。`;
+  const title = '📲 交易疑问？联系客服';
+  const content = `订单 #${orderId}「${resource.title}」已成交。\n订单履约或买卖双方沟通中如有疑问，可扫码添加 ${owner} 的企业微信进行咨询，由客服协助解答与协调。`;
 
   notify(buyerId,  'order_group', title, content, orderId, qrUrl);
   notify(sellerId, 'order_group', title, content, orderId, qrUrl);
