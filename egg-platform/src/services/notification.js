@@ -101,8 +101,12 @@ function notifyOrderGroupReady(orderId, buyerId, sellerId, resource) {
   const owner = settings.get('service_qr_owner') || '凤伯乐 · 客服';
   if (!qrUrl) return;  // 后台未上传二维码则不下发
 
+  // 优先使用 16 位 order_no 而不是 #自增 id，给用户看的字符串都用编号
+  const o = db.prepare('SELECT order_no FROM orders WHERE id=?').get(orderId);
+  const oLabel = (o && o.order_no) ? '订单 ' + o.order_no : '订单 #' + orderId;
+
   const title = '📲 交易疑问？联系客服';
-  const content = `订单 #${orderId}「${resource.title}」已成交。\n订单履约或买卖双方沟通中如有疑问，可扫码添加 ${owner} 的企业微信进行咨询，由客服协助解答与协调。`;
+  const content = `${oLabel}「${resource.title}」已成交。\n订单履约或买卖双方沟通中如有疑问，可扫码添加 ${owner} 的企业微信进行咨询，由客服协助解答与协调。`;
 
   notify(buyerId,  'order_group', title, content, orderId, qrUrl);
   notify(sellerId, 'order_group', title, content, orderId, qrUrl);
@@ -113,7 +117,7 @@ function notifyOrderGroupReady(orderId, buyerId, sellerId, resource) {
     const seller = getUser(sellerId);
     const txt = [
       '【凤伯乐·待拉群】',
-      `订单 #${orderId}：${resource.title}`,
+      `${oLabel}：${resource.title}`,
       `买方：${buyer && buyer.name || '?'}（${buyer && buyer.phone || '?'}）`,
       `卖方：${seller && seller.name || '?'}（${seller && seller.phone || '?'}）`,
       '请等买卖双方扫码加好友后建群。',

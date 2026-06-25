@@ -67,8 +67,9 @@ router.post('/:id/create-group', authRequired, (req, res) => {
   const groupId = `G${o.id}-${Date.now().toString(36)}`;
   db.prepare(`UPDATE orders SET group_id=?, status='communicating', group_created_at=? WHERE id=?`)
     .run(groupId, Date.now(), o.id);
-  notify(o.farm_id, 'group_created', '群已建立', `订单 #${o.id} 沟通群已创建`, o.id);
-  notify(o.buyer_id, 'group_created', '群已建立', `订单 #${o.id} 沟通群已创建`, o.id);
+  const oLabel = o.order_no ? '订单 ' + o.order_no : '订单 #' + o.id;
+  notify(o.farm_id, 'group_created', '群已建立', `${oLabel} 沟通群已创建`, o.id);
+  notify(o.buyer_id, 'group_created', '群已建立', `${oLabel} 沟通群已创建`, o.id);
   res.json({ ok: true, group_id: groupId });
 });
 
@@ -96,7 +97,8 @@ router.post('/:id/confirm', authRequired, (req, res) => {
   // 释放掉，settle 再扫 frozen 状态就空了，服务费永远扣不到。
   settleOrderDeposits(o.id);       // 新模型：解冻 buyer+seller 冻结金 + 从卖方账户直扣服务费
   releaseDeposits(o.id);           // 老模型遗留兜底（status=available 之类）
-  notify(o.farm_id, 'order_completed', '交易完成', `订单 #${o.id} 已确认收货，保证金已扣服务费并解冻余款`, o.id);
+  const oLabel = o.order_no ? '订单 ' + o.order_no : '订单 #' + o.id;
+  notify(o.farm_id, 'order_completed', '交易完成', `${oLabel} 已确认收货，保证金已扣服务费并解冻余款`, o.id);
   res.json({ ok: true });
 });
 
@@ -111,8 +113,9 @@ router.post('/:id/dispute', authRequired, (req, res) => {
     VALUES (?, ?, ?, ?, ?, ?)
   `).run(o.id, req.user.id, type, description || '', JSON.stringify(evidence || []), Date.now());
   db.prepare(`UPDATE orders SET status='disputed' WHERE id=?`).run(o.id);
+  const oLabel = o.order_no ? '订单 ' + o.order_no : '订单 #' + o.id;
   notify(o.farm_id === req.user.id ? o.buyer_id : o.farm_id,
-    'dispute_raised', '纠纷已发起', `订单 #${o.id} 出现纠纷：${type}`, o.id);
+    'dispute_raised', '纠纷已发起', `${oLabel} 出现纠纷：${type}`, o.id);
   res.json({ ok: true });
 });
 

@@ -52,12 +52,13 @@ function txTypeLabel(t) {
 function enrichTransaction(t) {
   const out = { ...t, type_label: txTypeLabel(t.type) };
   if (t.ref_type === 'order' && t.ref_id) {
-    const o = db.prepare('SELECT id, resource_id, final_price, quantity FROM orders WHERE id=?').get(t.ref_id);
+    const o = db.prepare('SELECT id, order_no, resource_id, final_price, quantity FROM orders WHERE id=?').get(t.ref_id);
     if (o) {
       const r = db.prepare('SELECT id, title FROM resources WHERE id=?').get(o.resource_id);
       out.related = {
         kind: 'order',
         order_id: o.id,
+        order_no: o.order_no,
         resource_id: r && r.id,
         title: r ? r.title : null,
         final_price: o.final_price,
@@ -67,18 +68,19 @@ function enrichTransaction(t) {
   } else if (t.ref_type === 'deposit' && t.ref_id) {
     const d = db.prepare('SELECT id, resource_id, type, amount FROM deposits WHERE id=?').get(t.ref_id);
     if (d) {
-      let title = null, orderId = null;
+      let title = null, orderId = null, orderNo = null;
       if (d.resource_id) {
         const r = db.prepare('SELECT id, title FROM resources WHERE id=?').get(d.resource_id);
         title = r ? r.title : null;
-        const o = db.prepare('SELECT id FROM orders WHERE resource_id=?').get(d.resource_id);
-        orderId = o ? o.id : null;
+        const o = db.prepare('SELECT id, order_no FROM orders WHERE resource_id=?').get(d.resource_id);
+        if (o) { orderId = o.id; orderNo = o.order_no; }
       }
       out.related = {
         kind: 'deposit',
         deposit_id: d.id,
         resource_id: d.resource_id,
         order_id: orderId,
+        order_no: orderNo,
         title,
         deposit_type: d.type,
         deposit_amount: d.amount,

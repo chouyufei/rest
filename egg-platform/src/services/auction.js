@@ -347,8 +347,9 @@ function sweep() {
   for (const order of autoOrders) {
     db.prepare(`UPDATE orders SET status='completed', confirmed_at=? WHERE id=?`).run(now, order.id);
     releaseDeposits(order.id);
-    notify(order.buyer_id, 'order_auto_complete', '订单自动完成', `订单 #${order.id} 7天未操作自动确认收货`, order.id);
-    notify(order.farm_id, 'order_auto_complete', '订单自动完成', `订单 #${order.id} 已自动确认收货并释放保证金`, order.id);
+    const oLabel = order.order_no ? '订单 ' + order.order_no : '订单 #' + order.id;
+    notify(order.buyer_id, 'order_auto_complete', '订单自动完成', `${oLabel} 7天未操作自动确认收货`, order.id);
+    notify(order.farm_id, 'order_auto_complete', '订单自动完成', `${oLabel} 已自动确认收货并释放保证金`, order.id);
   }
 }
 
