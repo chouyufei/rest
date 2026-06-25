@@ -162,13 +162,13 @@ router.post('/withdrawals', authRequired, async (req, res) => {
 
   let w = db.prepare('SELECT * FROM withdrawals WHERE id=?').get(info.lastInsertRowid);
 
-  // 微信零钱：用户提交后立即处理，不挂 pending，对用户呈现"即时到账"。
-  //  - 商家转账接口成功 + 返回 package_info → status='transferring'，小程序拉起
-  //    wx.requestMerchantTransfer 让用户在微信确认收款；
-  //  - 商家转账接口直接成功无 package_info（老批次接口）→ status='paid'，立即扣余额；
-  //  - 商家转账接口因配置 / openid / SDK 等任意原因不可用 → status='paid'，立即扣
-  //    余额并 set failure_reason 标记"需平台补打"，由管理员在后台对账人工打款。
-  //    这样无论后端状态如何，用户都立刻在钱包看到「已到账」，符合"实时提现"承诺。
+  // 微信零钱：提交后立即调商家转账接口，按不同结果分支处理
+  //  · ok + package_info → status='transferring'，小程序拉起 wx.requestMerchantTransfer
+  //  · ok 无 package_info（老批次接口）→ status='paid' + 扣余额
+  //  · demo 分支（环境未配 / 用户没 openid / SDK 不支持 等"前置条件不满足"）
+  //    → 仍走"乐观置 paid + 扣余额 + 写 failure_reason 待人工补打"，便于审核测试
+  //  · 真实 API 失败（HTTP 4xx/5xx 带 wx_code，包括"商户账户余额不足"）
+  //    → status='failed'，把锁定的金额 unlock 回可用余额，给用户失败提示
   if (method === 'wechat') {
     let result = null;
     try {
@@ -182,29 +182,60 @@ router.post('/withdrawals', authRequired, async (req, res) => {
     }
 
     if (result && result.ok && result.package_info) {
-      // 走新单笔接口、需要小程序拉起 wx.requestMerchantTransfer
       db.prepare(`
         UPDATE withdrawals
         SET status='transferring', out_trade_no=?, package_info=?, transfer_bill_no=?, processed_at=?
         WHERE id=?
       `).run(result.transfer_id || null, result.package_info, result.bill_id || null, Date.now(), w.id);
-    } else {
-      // 真实接口成功（无 package_info）或失败（任何原因）→ 一律乐观置 paid + 扣余额
-      const reason = result && result.ok
-        ? null
-        : `需平台人工补打款：${(result && (result.wx_message || result.error || result.message)) || '商家转账接口未就绪'}`;
+    } else if (result && result.ok) {
+      // 老批次接口成功（无 package_info）→ 立即 paid + 扣余额
       db.prepare(`
         UPDATE withdrawals
-        SET status='paid', out_trade_no=?, transfer_bill_no=?, processed_at=?, failure_reason=?
+        SET status='paid', out_trade_no=?, transfer_bill_no=?, processed_at=?
         WHERE id=?
-      `).run(result && result.transfer_id || null, result && result.bill_id || null, Date.now(), reason, w.id);
+      `).run(result.transfer_id || null, result.bill_id || null, Date.now(), w.id);
       balance.consume(req.user.id, amt, {
-        type: 'withdraw_paid',
-        ref_type: 'withdrawal',
-        ref_id: w.id,
+        type: 'withdraw_paid', ref_type: 'withdrawal', ref_id: w.id,
         note: '微信零钱即时到账',
       });
-      if (reason) console.warn('[withdraw] 微信即时转账走兜底', { withdrawalId: w.id, reason });
+    } else if (result && result.demo) {
+      // 前置条件不满足（审核测试场景）：乐观 paid + 扣余额 + 标记待人工补打
+      const reason = `需平台人工补打款：${result.message || result.reason || '商家转账接口未就绪'}`;
+      db.prepare(`
+        UPDATE withdrawals
+        SET status='paid', processed_at=?, failure_reason=?
+        WHERE id=?
+      `).run(Date.now(), reason, w.id);
+      balance.consume(req.user.id, amt, {
+        type: 'withdraw_paid', ref_type: 'withdrawal', ref_id: w.id,
+        note: '微信零钱即时到账',
+      });
+      console.warn('[withdraw] 微信转账走 demo 兜底', { withdrawalId: w.id, reason });
+    } else {
+      // 真实 API 调用失败（如商户账户余额不足 NOT_ENOUGH）：标记 failed + 解冻锁定金额
+      const wxMsg = (result && (result.wx_message || result.error)) || '商家转账失败，请稍后重试';
+      db.prepare(`
+        UPDATE withdrawals
+        SET status='failed', processed_at=?, failure_reason=?
+        WHERE id=?
+      `).run(Date.now(), wxMsg, w.id);
+      try {
+        balance.unlock(req.user.id, amt, {
+          type: 'withdraw_refund', ref_type: 'withdrawal', ref_id: w.id,
+          note: `提现失败退回（${wxMsg}）`,
+        });
+      } catch (e) {
+        console.error('[withdraw] 失败回退 unlock 异常', e);
+      }
+      console.error('[withdraw] 微信转账 API 失败 → 已退款', {
+        withdrawalId: w.id, http_status: result.http_status, wx_code: result.wx_code, wx_message: result.wx_message,
+      });
+      w = db.prepare('SELECT * FROM withdrawals WHERE id=?').get(w.id);
+      return res.status(400).json({
+        error: `提现失败，金额已退回钱包：${wxMsg}`,
+        withdrawal: w,
+        wx_code: result.wx_code,
+      });
     }
     w = db.prepare('SELECT * FROM withdrawals WHERE id=?').get(w.id);
   }

@@ -79,6 +79,18 @@ router.get('/mine', authRequired, (req, res) => {
   res.json({ resources: rows.map(enrich) });
 });
 
+// 沿用上次发布：拉用户最近一次发布的资源（按 kind 区分 supply/demand），供发布页"一键填入"
+router.get('/last-published', authRequired, (req, res) => {
+  const kind = req.query.kind || 'supply';
+  const row = db.prepare(`
+    SELECT * FROM resources
+    WHERE farm_id=? AND kind=? AND deleted_at IS NULL
+    ORDER BY created_at DESC LIMIT 1
+  `).get(req.user.id, kind);
+  if (!row) return res.json({ resource: null });
+  res.json({ resource: enrich(row) });
+});
+
 // 卖家信用 / 宝贝记录
 router.get('/seller/:userId', (req, res) => {
   const u = db.prepare(`
