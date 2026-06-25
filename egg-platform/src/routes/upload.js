@@ -29,9 +29,15 @@ const upload = multer({
 
 router.post('/', authRequired, upload.single('file'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: '未收到文件' });
-  const proto = (req.headers['x-forwarded-proto'] || req.protocol || 'http');
-  const host = req.get('host');
-  const url = `${proto}://${host}/uploads/${req.file.filename}`;
+  // 优先用 .env 配的对外公开域名（HTTPS、已加进小程序后台 downloadFile 合法域名）；
+  // 否则按请求来源拼，可能是 http://IP:port 这种 mp 不允许加载的地址
+  let base = process.env.PUBLIC_BASE_URL || '';
+  if (!base) {
+    const proto = (req.headers['x-forwarded-proto'] || req.protocol || 'http');
+    const host = req.get('host');
+    base = `${proto}://${host}`;
+  }
+  const url = `${base.replace(/\/+$/, '')}/uploads/${req.file.filename}`;
   res.json({ url, filename: req.file.filename, size: req.file.size });
 });
 
