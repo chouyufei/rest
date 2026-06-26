@@ -321,6 +321,43 @@ router.post('/withdrawals/:id/reject', (req, res) => {
   res.json({ ok: true });
 });
 
+// 银行卡（或微信兜底）打款失败：把已 paid 的退回钱包；适用于"标已打款但
+// 实际银行卡转账失败 / 商户账户无余额"等场景。pending / approved 也可直接
+// 标 failed 退款（替代 /reject 文案更贴切）。
+router.post('/withdrawals/:id/mark-failed', (req, res) => {
+  const { reason } = req.body || {};
+  const w = db.prepare('SELECT * FROM withdrawals WHERE id=?').get(req.params.id);
+  if (!w) return res.status(404).json({ error: '申请不存在' });
+  if (!['pending', 'approved', 'paid', 'transferring'].includes(w.status)) {
+    return res.status(400).json({ error: `当前状态 ${w.status} 无法标记失败` });
+  }
+  const reasonText = reason || '打款失败，请稍后再试';
+  // 已 paid 的：之前走过 balance.consume（balance -= 退还 + locked -= 退还），
+  // 这里 credit 一笔补回 balance；locked 已经清，不再 unlock。
+  // 其它（pending / approved / transferring）：原始 lock 还在 locked_balance，
+  // 走 unlock 把锁定金额释放回可用即可。
+  if (w.status === 'paid') {
+    balance.credit(w.user_id, w.amount, {
+      type: 'withdraw_refund', ref_type: 'withdrawal', ref_id: w.id,
+      note: `提现失败退回：${reasonText}`,
+    });
+  } else {
+    try {
+      balance.unlock(w.user_id, w.amount, {
+        type: 'withdraw_refund', ref_type: 'withdrawal', ref_id: w.id,
+        note: `提现失败退回：${reasonText}`,
+      });
+    } catch (e) {
+      console.warn('[withdraw] mark-failed unlock 异常', { id: w.id, error: e.message });
+    }
+  }
+  db.prepare(`UPDATE withdrawals SET status='failed', processed_at=?, processed_by=?, failure_reason=? WHERE id=?`)
+    .run(Date.now(), req.user.id, reasonText, w.id);
+  notify(w.user_id, 'withdraw_failed', '提现失败',
+    `您的 ${w.amount} 元提现未能成功打款（${reasonText}），金额已退回钱包，可稍后再试`, w.id);
+  res.json({ ok: true });
+});
+
 router.post('/withdrawals/:id/mark-paid', async (req, res) => {
   const { out_trade_no, mode } = req.body || {};
   // mode: 'auto'（默认）→ 尝试调商家转账 API；'manual' → 仅记账，需管理员手工打款
