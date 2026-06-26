@@ -21,14 +21,18 @@ const txCredit = db.transaction((userId, amount, meta) => {
 const txDebit = db.transaction((userId, amount, meta) => {
   const u = db.prepare('SELECT balance, locked_balance FROM users WHERE id=?').get(userId);
   if (!u) throw new Error('用户不存在');
-  const amt = Number(amount);
-  const bal = Number(u.balance || 0);
-  const locked = Number(u.locked_balance || 0);
+  // 关键比较全走"分"整数，避免 1.35 - 0.35 = 0.999999... 导致的误判
+  const amtC = Math.round(Number(amount) * 100);
+  const balC = Math.round(Number(u.balance || 0) * 100);
+  const lockedC = Math.round(Number(u.locked_balance || 0) * 100);
+  const bal = balC / 100;
+  const locked = lockedC / 100;
+  const amt = amtC / 100;
   if (meta.from_locked) {
-    if (locked < amt) throw new Error('冻结余额不足');
-    if (bal < amt) throw new Error('账户余额不足');
-    const newBal = bal - amt;
-    const newLocked = locked - amt;
+    if (lockedC < amtC) throw new Error('冻结余额不足');
+    if (balC < amtC) throw new Error('账户余额不足');
+    const newBal = (balC - amtC) / 100;
+    const newLocked = (lockedC - amtC) / 100;
     db.prepare('UPDATE users SET balance=?, locked_balance=? WHERE id=?').run(newBal, newLocked, userId);
     db.prepare(`
       INSERT INTO balance_transactions
@@ -37,7 +41,7 @@ const txDebit = db.transaction((userId, amount, meta) => {
     `).run(userId, -amt, meta.type, meta.ref_type || null, meta.ref_id || null, newBal, meta.note || null, Date.now());
     return newBal;
   }
-  if (bal - locked < amt) throw new Error('可用余额不足');
+  if (balC - lockedC < amtC) throw new Error('可用余额不足');
   // 锁定：balance 不变化，locked_balance + amt
   db.prepare('UPDATE users SET locked_balance=? WHERE id=?').run(locked + amt, userId);
   db.prepare(`
@@ -90,12 +94,21 @@ function consume(userId, amount, meta) { return txDebit(userId, amount, { ...met
 function unlock(userId, amount, meta)  { return txUnlock(userId, amount, meta); }
 function debit(userId, amount, meta)   { return txPureDebit(userId, amount, meta); }
 
+// 钱包数额走 REAL 存储，多次 +/- 累积 IEEE 754 误差，例如 1.35 - 0.35
+// 在 JS 里 = 0.9999999999999999。先把 balance / locked 各自圆整到分位
+// 整数，再做整数减法，结果再换算回元——可用余额永远是干净的分位值，
+// 比较时不会因为 0.99999... 被误判为"不够"。
 function getBalance(userId) {
   const u = db.prepare('SELECT balance, locked_balance FROM users WHERE id=?').get(userId);
   if (!u) return { balance: 0, locked_balance: 0, available: 0 };
-  const bal = Number(u.balance || 0);
-  const locked = Number(u.locked_balance || 0);
-  return { balance: bal, locked_balance: locked, available: bal - locked };
+  const balCents = Math.round(Number(u.balance || 0) * 100);
+  const lockedCents = Math.round(Number(u.locked_balance || 0) * 100);
+  const availableCents = balCents - lockedCents;
+  return {
+    balance: balCents / 100,
+    locked_balance: lockedCents / 100,
+    available: availableCents / 100,
+  };
 }
 
 function getTransactions(userId, { limit = 50, offset = 0 } = {}) {

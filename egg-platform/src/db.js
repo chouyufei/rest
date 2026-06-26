@@ -367,6 +367,32 @@ addColumnIfMissing('withdrawals', 'transfer_bill_no', 'transfer_bill_no TEXT'); 
   `).run('_fix_deposit_release_overcredit_v1', JSON.stringify(true), Date.now());
 })();
 
+// 一次性修正：把所有 users.balance / locked_balance 圆整到分位，
+// 清掉历史多次浮点加减遗留的 0.9999... / 1.0000000000000002 尾巴
+(function clampBalancesToCents() {
+  const flag = db.prepare("SELECT value FROM app_settings WHERE key='_clamp_balances_cents_v1'").get();
+  if (flag) return;
+  const rows = db.prepare(`
+    SELECT id, balance, locked_balance FROM users
+    WHERE balance IS NOT NULL OR locked_balance IS NOT NULL
+  `).all();
+  for (const u of rows) {
+    const balC = Math.round(Number(u.balance || 0) * 100);
+    const lockedC = Math.round(Number(u.locked_balance || 0) * 100);
+    const newBal = balC / 100;
+    const newLocked = lockedC / 100;
+    if (newBal !== u.balance || newLocked !== u.locked_balance) {
+      db.prepare('UPDATE users SET balance=?, locked_balance=? WHERE id=?')
+        .run(newBal, newLocked, u.id);
+    }
+  }
+  db.prepare(`
+    INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)
+    ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+  `).run('_clamp_balances_cents_v1', JSON.stringify(true), Date.now());
+  if (rows.length) console.log(`[migrate] clampBalancesToCents 处理 ${rows.length} 名用户`);
+})();
+
 // 一次性修正：旧版 balance.consume() 只扣了 locked_balance，没扣 balance；
 // 把每个用户的历史「withdraw_paid」金额从 balance 里补减回去，使数据归正。
 (function fixHistoricalWithdrawPaidBalance() {
