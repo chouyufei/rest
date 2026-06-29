@@ -28,7 +28,7 @@ const DEFAULTS = {
 
   // 提现规则（按微信审核要求显式声明，并在前端展示给用户）
   // 微信零钱 与 银行卡 走不同接口、不同额度，单独配置
-  withdraw_min_amount: 1,                       // 共用：最低单笔提现 (元)
+  withdraw_min_amount: 0.01,                    // 共用：最低单笔提现 (元)
   // 微信零钱：商户转账新接口默认权限较小，需按申请到的额度配
   withdraw_wechat_max_per_request: 200,         // 单笔最高 (元)
   withdraw_wechat_max_daily_count: 10,          // 每日最多申请次数

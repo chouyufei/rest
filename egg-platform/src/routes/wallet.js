@@ -9,7 +9,7 @@ const router = express.Router();
 // 提现规则统一从 settings 读取，微信零钱 / 银行卡 分两套额度。
 function withdrawRules() {
   return {
-    min_amount: Number(settings.get('withdraw_min_amount')) || 1,
+    min_amount: Number(settings.get('withdraw_min_amount')) || 0.01,
     processing_hours: Number(settings.get('withdraw_processing_hours')) || 1,
     arrival_hours: Number(settings.get('withdraw_arrival_hours')) || 2,
     fee_pct: Number(settings.get('withdraw_fee_pct')) || 0,

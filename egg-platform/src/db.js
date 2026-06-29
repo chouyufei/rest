@@ -464,6 +464,19 @@ db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username)
   }
 })();
 
+// 一次性把历史 withdraw_min_amount 从 1 元降到 0.01 元
+(function lowerWithdrawMin() {
+  const row = db.prepare("SELECT value FROM app_settings WHERE key='withdraw_min_amount'").get();
+  if (!row) return;
+  let v;
+  try { v = JSON.parse(row.value); } catch (e) { return; }
+  if (typeof v === 'number' && v > 0.01) {
+    db.prepare(`UPDATE app_settings SET value=?, updated_at=? WHERE key='withdraw_min_amount'`)
+      .run(JSON.stringify(0.01), Date.now());
+    console.log(`[migrate] withdraw_min_amount ${v} → 0.01`);
+  }
+})();
+
 // 一次性把历史保存的过长提现审核 / 到账时长压到新策略：实时审核、≤2 小时到账
 (function clampWithdrawTimes() {
   const targets = { withdraw_processing_hours: 1, withdraw_arrival_hours: 2 };

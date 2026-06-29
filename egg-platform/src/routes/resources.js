@@ -249,6 +249,70 @@ router.post('/', authRequired, (req, res) => {
   res.json({ resource: enrich(r) });
 });
 
+// 重新上架：复用原资源（仅未成交 / 已取消），更新字段 + 重置 status / 时间，
+// 不新建记录，避免"我的发布"列表出现重复货源。
+router.post('/:id/relist', authRequired, (req, res) => {
+  const old = db.prepare('SELECT * FROM resources WHERE id=?').get(req.params.id);
+  if (!old) return res.status(404).json({ error: '资源不存在' });
+  if (old.farm_id !== req.user.id) return res.status(403).json({ error: '只能操作自己的资源' });
+  if (!['failed', 'cancelled'].includes(old.status)) {
+    return res.status(400).json({ error: '仅未成交 / 已取消的资源可重新上架' });
+  }
+
+  const b = req.body || {};
+  const kind = old.kind || 'supply';
+  const dh = Number(b.duration_hours);
+  if (![0.5, 1, 1.5].includes(dh)) return res.status(400).json({ error: '订单有效期仅支持 0.5 / 1 / 1.5 小时' });
+  const inc = Number(b.min_increment) || 1;
+  const startPrice = Number(b.start_price);
+  const now = Date.now();
+  const endAt = now + dh * 60 * 60 * 1000;
+
+  // 先确保该资源有冻结保证金（原资源 cancel/fail 时已释放，这里重新冻结一笔）
+  try {
+    lockDepositForResource({
+      userId: req.user.id, resourceId: old.id,
+      type: kind === 'supply' ? 'farm_quality' : 'demand_quality',
+    });
+  } catch (e) {
+    if (e.code === 'INSUFFICIENT_BALANCE') {
+      return res.status(402).json({ error: e.message, code: 'INSUFFICIENT_BALANCE' });
+    }
+    return res.status(500).json({ error: e.message });
+  }
+
+  const me = db.prepare('SELECT lat, lng FROM users WHERE id=?').get(req.user.id);
+  const snapLat = (b.lat != null ? Number(b.lat) : (me && me.lat)) ?? null;
+  const snapLng = (b.lng != null ? Number(b.lng) : (me && me.lng)) ?? null;
+
+  db.prepare(`
+    UPDATE resources SET
+      title=?, region=?, province=?, chicken_breed=?, egg_color=?, weight_spec=?,
+      freshness_days=?, quantity=?, photos=?, description=?, start_price=?,
+      min_increment=?, current_price=?, current_bidder_id=NULL, last_bid_at=NULL,
+      start_at=?, end_at=?, extend_count=0, status='auctioning',
+      unit_label=?, unit_size=?, intro_video=?, defect_rate=?, defect_note=?,
+      pack_size=?, yolk_color=?, yolk_shade=?, truck_type=?, weight_specs=?,
+      lat=?, lng=?
+    WHERE id=?
+  `).run(
+    b.title || old.title, b.region || old.region, b.province || old.province,
+    b.chicken_breed || null, b.egg_color || old.egg_color, b.weight_spec || old.weight_spec,
+    b.freshness_days || null, Number(b.quantity) || old.quantity,
+    JSON.stringify(b.photos || []), b.description || null, startPrice,
+    inc, startPrice, now, endAt,
+    b.unit_label || '元/箱', b.unit_size || '车', b.intro_video || null,
+    b.defect_rate != null ? Number(b.defect_rate) : null, b.defect_note || null,
+    b.pack_size != null && b.pack_size !== '' ? Number(b.pack_size) : null,
+    b.yolk_color || null, b.yolk_shade || null, b.truck_type || null,
+    b.weight_specs ? (typeof b.weight_specs === 'string' ? b.weight_specs : JSON.stringify(b.weight_specs)) : null,
+    snapLat, snapLng, old.id,
+  );
+
+  const r = db.prepare('SELECT * FROM resources WHERE id=?').get(old.id);
+  res.json({ resource: enrich(r), reused: true });
+});
+
 router.patch('/:id', authRequired, (req, res) => {
   const r = db.prepare('SELECT * FROM resources WHERE id=?').get(req.params.id);
   if (!r) return res.status(404).json({ error: '资源不存在' });
