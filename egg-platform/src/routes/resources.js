@@ -4,6 +4,7 @@ const { authRequired, roleRequired } = require('../middleware/auth');
 const { closeAuction, sweep, computeDepositAmount, releaseResourceDeposits, lockDepositForResource } = require('../services/auction');
 const balance = require('../services/balance');
 const { distanceKm } = require('../services/geo');
+const { notifyNearbyOnPublish } = require('../services/notification');
 
 const NEAR_RADIUS_KM = 500;  // 推荐"附近"范围
 
@@ -250,6 +251,8 @@ router.post('/', authRequired, (req, res) => {
   }
 
   const r = db.prepare('SELECT * FROM resources WHERE id=?').get(info.lastInsertRowid);
+  // 给附近用户推送订阅消息 + 站内信（按后台 push_radius_km）；失败不影响发布
+  try { notifyNearbyOnPublish(r); } catch (e) { console.warn('[push] notifyNearbyOnPublish 失败', e.message); }
   res.json({ resource: enrich(r) });
 });
 
@@ -314,6 +317,7 @@ router.post('/:id/relist', authRequired, (req, res) => {
   );
 
   const r = db.prepare('SELECT * FROM resources WHERE id=?').get(old.id);
+  try { notifyNearbyOnPublish(r); } catch (e) { console.warn('[push] relist 推送失败', e.message); }
   res.json({ resource: enrich(r), reused: true });
 });
 

@@ -229,6 +229,10 @@ router.put('/notice-settings', (req, res) => {
   if (wecom_webhook_url !== undefined) {
     settings.set('wecom_webhook_url', String(wecom_webhook_url || '').trim());
   }
+  if (req.body.push_radius_km !== undefined) {
+    const n = Number(req.body.push_radius_km);
+    if (n >= 0 && n <= 5000) settings.set('push_radius_km', n);
+  }
   res.json({ ok: true, settings: settings.getAll() });
 });
 

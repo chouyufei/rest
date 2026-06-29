@@ -3,6 +3,7 @@ const sms = require('./sms');
 const wechat = require('./wechat-notify');
 const wecom = require('./wecom-notify');
 const settings = require('./settings');
+const { distanceKm } = require('./geo');
 
 function notify(userId, type, title, content, relatedId = null, imageUrl = null) {
   db.prepare(`
@@ -152,8 +153,35 @@ function notifyOutbid(userId, resource, price, isSupply) {
   dispatchUserChannels(u, 'outbid', resource.title, resource.id, false);
 }
 
+// 场景：新货源 / 求购发布 → 给定位在推送半径内的用户推订阅消息 + 站内信
+// （排除发布者自己；按 users.lat/lng 与资源 lat/lng 距离过滤）
+function notifyNearbyOnPublish(resource) {
+  if (resource.lat == null || resource.lng == null) return 0;
+  const radius = Number(settings.get('push_radius_km')) || 500;
+  const isSupply = (resource.kind || 'supply') === 'supply';
+  // 候选：有定位、非发布者、未被封禁
+  const users = db.prepare(`
+    SELECT id, phone, wechat_openid, lat, lng FROM users
+    WHERE lat IS NOT NULL AND lng IS NOT NULL AND id != ? AND COALESCE(banned,0)=0
+  `).all(resource.farm_id);
+  let sent = 0;
+  const page = '/pages/resource-detail/resource-detail?id=' + resource.id;
+  const title = isSupply ? '附近有新货源' : '附近有新求购';
+  for (const u of users) {
+    const d = distanceKm(Number(resource.lat), Number(resource.lng), Number(u.lat), Number(u.lng));
+    if (d == null || d > radius) continue;
+    notify(u.id, 'nearby_publish', title,
+      `${Math.round(d)}km 内${isSupply ? '新货源' : '新求购'}：「${resource.title}」`, resource.id);
+    wechat.send(u.wechat_openid, 'nearby', resource.title, page);
+    sent++;
+  }
+  if (sent) console.log(`[push] 资源 #${resource.id} 推送给 ${sent} 名附近用户（半径 ${radius}km）`);
+  return sent;
+}
+
 module.exports = {
   notify,
+  notifyNearbyOnPublish,
   notifyAuctionWon,
   notifyAuctionLost,
   notifyOrderReceived,

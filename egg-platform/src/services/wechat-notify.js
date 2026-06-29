@@ -32,6 +32,7 @@ const RESULT_TEXTS = {
   seller:     '已成交',
   new_bid:    '新报价',
   outbid:     '被反超',
+  nearby:     '附近新货',
 };
 
 // 过滤 emoji + 杂质：thing 类字段不允许 emoji，部分平台对全角符号也敏感
@@ -91,6 +92,9 @@ function templatesPublic() {
     auction_won:    tpl,
     auction_lost:   tpl,
     order_received: tpl,
+    new_bid:        tpl,
+    outbid:         tpl,
+    nearby:         tpl,
   };
 }
 
