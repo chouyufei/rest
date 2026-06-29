@@ -203,6 +203,7 @@ addColumnIfMissing('resources', 'yolk_color', 'yolk_color TEXT');               
 addColumnIfMissing('resources', 'yolk_shade', 'yolk_shade TEXT');                // 蛋黄色号 (罗氏比色卡 度数, 如 "12-13")
 addColumnIfMissing('resources', 'truck_type', 'truck_type TEXT');                // 车型 (米数, 如 "4.2" / "6.8" / "9.6" / "13.5")
 addColumnIfMissing('resources', 'weight_specs', 'weight_specs TEXT');            // JSON: 每个整数斤值的 { weight, boxes, price }
+addColumnIfMissing('resources', 'allow_provinces', 'allow_provinces TEXT');      // 求购"允许参与地区"省份数组 JSON，NULL=不限
 addColumnIfMissing('resources', 'deleted_at', 'deleted_at INTEGER');             // 软删除时间戳（仅 failed / cancelled 资源可由发布方主动删除）
 addColumnIfMissing('resources', 'lat', 'lat REAL');                              // 发布时快照养殖场 / 采购商定位
 addColumnIfMissing('resources', 'lng', 'lng REAL');

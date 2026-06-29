@@ -35,6 +35,8 @@ function wechatResultText(scenario) {
     buyer_won: '货源报价成功',
     buyer_lost: '货源报价失败',
     seller: '您的货源已被成功报价',
+    new_bid: '您发布的货源收到新报价',
+    outbid: '您的报价已被超过',
   }[scenario]) || scenario;
 }
 
@@ -134,6 +136,22 @@ function notifyPlatformOnDeal(resource, sellerId, buyerId, finalPrice) {
   dispatchPlatformChannels(resource, seller, buyer, finalPrice);
 }
 
+// 场景：有人出价 → 通知发布方（站内 + 订阅消息 + 短信）
+function notifyNewBidToPublisher(userId, resource, price, isSupply) {
+  const u = getUser(userId); if (!u) return;
+  notify(u.id, 'new_bid', isSupply ? '收到新报价' : '收到新应标',
+    `「${resource.title}」收到新报价 ¥${price}`, resource.id);
+  dispatchUserChannels(u, 'new_bid', resource.title, resource.id, true);
+}
+
+// 场景：出价被超越 → 通知原出价者（站内 + 订阅消息 + 短信）
+function notifyOutbid(userId, resource, price, isSupply) {
+  const u = getUser(userId); if (!u) return;
+  notify(u.id, 'outbid', isSupply ? '您的报价被反超' : '您的报价被压价',
+    `「${resource.title}」当前价 ¥${price}，您的报价已被超过，可继续出价`, resource.id);
+  dispatchUserChannels(u, 'outbid', resource.title, resource.id, false);
+}
+
 module.exports = {
   notify,
   notifyAuctionWon,
@@ -142,4 +160,6 @@ module.exports = {
   notifyAuctionFailedToPublisher,
   notifyOrderGroupReady,
   notifyPlatformOnDeal,
+  notifyNewBidToPublisher,
+  notifyOutbid,
 };

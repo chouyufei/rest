@@ -185,8 +185,11 @@ router.post('/', authRequired, (req, res) => {
     title, region, province, chicken_breed, farm_size, egg_color, weight_spec, shell_quality,
     freshness_days, quantity, photos, description, start_price, min_increment,
     duration_hours, unit_label, unit_size, intro_video, defect_rate, defect_note,
-    pack_size, yolk_color, yolk_shade, truck_type, weight_specs,
+    pack_size, yolk_color, yolk_shade, truck_type, weight_specs, allow_provinces,
   } = req.body;
+  // 求购"允许参与地区"：省份数组，空 / 不传 = 不限制
+  const allowProvincesJson = (kind === 'demand' && Array.isArray(allow_provinces) && allow_provinces.length)
+    ? JSON.stringify(allow_provinces) : null;
 
   if (!title || !start_price || !quantity || !duration_hours) {
     return res.status(400).json({ error: '请填写必填项：标题/起报价/数量/订单有效期' });
@@ -211,8 +214,8 @@ router.post('/', authRequired, (req, res) => {
       farm_id, title, region, province, chicken_breed, farm_size, egg_color, weight_spec, shell_quality,
       freshness_days, quantity, photos, description, start_price, min_increment, current_price,
       start_at, end_at, status, created_at, kind, unit_label, unit_size, intro_video,
-      defect_rate, defect_note, pack_size, yolk_color, yolk_shade, truck_type, weight_specs, lat, lng, review_status
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved')
+      defect_rate, defect_note, pack_size, yolk_color, yolk_shade, truck_type, weight_specs, allow_provinces, lat, lng, review_status
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved')
   `).run(
     req.user.id, title, region || req.user.region, province || null,
     chicken_breed, farm_size, egg_color, weight_spec, shell_quality,
@@ -226,6 +229,7 @@ router.post('/', authRequired, (req, res) => {
     yolk_shade || null,
     truck_type || null,
     weight_specs ? (typeof weight_specs === 'string' ? weight_specs : JSON.stringify(weight_specs)) : null,
+    allowProvincesJson,
     snapLat, snapLng,
   );
 

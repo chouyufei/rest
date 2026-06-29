@@ -18,6 +18,18 @@ router.post('/', authRequired, (req, res) => {
   if (!isSupply && req.user.license_status !== 'approved') {
     return res.status(403).json({ error: '应标求购需求需先完成鸡场资质认证（养殖场资质）' });
   }
+  // 求购"允许参与地区"限制：用户所在省份（按 region 文本匹配）须在白名单内
+  if (!isSupply && r.allow_provinces) {
+    let allow = [];
+    try { allow = JSON.parse(r.allow_provinces) || []; } catch (e) {}
+    if (allow.length) {
+      const myRegion = String(req.user.region || '');
+      const ok = allow.some(p => myRegion.indexOf(p) >= 0);
+      if (!ok) {
+        return res.status(403).json({ error: `该求购仅限 ${allow.join('、')} 的养殖场参与，您所在地区不符合` });
+      }
+    }
+  }
   // 首次报价：自动从钱包冻结一笔服务保障金
   try {
     lockDepositForResource({ userId: req.user.id, resourceId: Number(resource_id), type: 'buyer_bid' });

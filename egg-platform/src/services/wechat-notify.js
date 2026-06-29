@@ -30,6 +30,8 @@ const RESULT_TEXTS = {
   buyer_won:  '已中标',
   buyer_lost: '未中标',
   seller:     '已成交',
+  new_bid:    '新报价',
+  outbid:     '被反超',
 };
 
 // 过滤 emoji + 杂质：thing 类字段不允许 emoji，部分平台对全角符号也敏感

@@ -184,6 +184,8 @@ const {
   notifyAuctionFailedToPublisher,
   notifyOrderGroupReady,
   notifyPlatformOnDeal,
+  notifyNewBidToPublisher,
+  notifyOutbid,
 } = require('./notification');
 
 // 统一保证金：所有三类（发布货源 / 发起求购 / 参与报价）固定一笔，
@@ -242,13 +244,12 @@ function placeBidTx(resourceId, bidderId, price, isAuto = 0, maxPrice = null) {
     WHERE id = ?
   `).run(price, bidderId, now, resourceId);
 
+  // 被超越的原出价者：站内 + 订阅消息 + 短信
   if (prevBidder && prevBidder !== bidderId) {
-    notify(prevBidder, 'outbid', isSupply ? '被反超' : '被压价',
-      `您在「${resource.title}」的${isSupply ? '报价' : '报价'}已被超过，可继续报价`, resourceId);
+    notifyOutbid(prevBidder, resource, price, isSupply);
   }
-
-  notify(resource.farm_id, 'new_bid', isSupply ? '新报价' : '新报价',
-    `「${resource.title}」收到 ${price} 元${isSupply ? '报价' : '报价'}`, resourceId);
+  // 发布方：有人出价 → 站内 + 订阅消息 + 短信
+  notifyNewBidToPublisher(resource.farm_id, resource, price, isSupply);
 
   triggerAutoBids(resourceId, bidderId);
 
