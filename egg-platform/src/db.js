@@ -188,6 +188,7 @@ addColumnIfMissing('users', 'wechat_openid', 'wechat_openid TEXT');
 addColumnIfMissing('users', 'username', 'username TEXT');
 addColumnIfMissing('users', 'balance', 'balance REAL NOT NULL DEFAULT 0');         // 钱包余额（保证金释放 / 退款 沉淀于此）
 addColumnIfMissing('users', 'locked_balance', 'locked_balance REAL NOT NULL DEFAULT 0');  // 提现申请中冻结部分
+addColumnIfMissing('users', 'license_pending', 'license_pending TEXT');           // approved 用户重新提交的待审核资质快照(JSON)，审核通过才覆盖正式字段
 addColumnIfMissing('users', 'lat', 'lat REAL');                                   // 用户最近一次定位
 addColumnIfMissing('users', 'lng', 'lng REAL');
 addColumnIfMissing('users', 'location_updated_at', 'location_updated_at INTEGER');

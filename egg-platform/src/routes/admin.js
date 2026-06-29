@@ -87,13 +87,43 @@ router.get('/users', (req, res) => {
 });
 
 router.post('/users/:id/approve', (req, res) => {
-  db.prepare("UPDATE users SET license_status='approved' WHERE id=?").run(req.params.id);
+  const u = db.prepare('SELECT license_pending FROM users WHERE id=?').get(req.params.id);
+  // 若存在 license_pending（approved 用户重新提交的快照），审核通过即覆盖正式字段
+  if (u && u.license_pending) {
+    let p = null;
+    try { p = JSON.parse(u.license_pending); } catch (e) {}
+    if (p) {
+      db.prepare(`
+        UPDATE users SET
+          name=COALESCE(?,name), region=COALESCE(?,region), address=COALESCE(?,address),
+          business_license=?, contact_name=?, daily_output=?, main_products=?, farm_size_int=?,
+          license_photos=?, farm_photos=?, quarantine_photos=?,
+          license_pending=NULL, license_status='approved'
+        WHERE id=?
+      `).run(
+        p.name, p.region, p.address, p.business_license, p.contact_name,
+        p.daily_output, p.main_products, p.farm_size_int,
+        p.license_photos, p.farm_photos, p.quarantine_photos,
+        req.params.id,
+      );
+      notify(req.params.id, 'qualify_approved', '资质审核通过', '您修改的资质已审核通过并生效', null);
+      return res.json({ ok: true });
+    }
+  }
+  db.prepare("UPDATE users SET license_status='approved', license_pending=NULL WHERE id=?").run(req.params.id);
   notify(req.params.id, 'qualify_approved', '资质审核通过', '您的资质已审核通过，现在可以缴纳保证金并发布资源', null);
   res.json({ ok: true });
 });
 
 router.post('/users/:id/reject', (req, res) => {
   const { reason } = req.body;
+  const u = db.prepare('SELECT license_pending FROM users WHERE id=?').get(req.params.id);
+  // 重新提交被拒：保留原 approved 正式字段，仅丢弃 pending 快照、状态回 approved
+  if (u && u.license_pending) {
+    db.prepare("UPDATE users SET license_status='approved', license_pending=NULL WHERE id=?").run(req.params.id);
+    notify(req.params.id, 'qualify_rejected', '资质修改未通过', (reason || '修改未通过') + '，已保留您之前的资质信息', null);
+    return res.json({ ok: true });
+  }
   db.prepare("UPDATE users SET license_status='rejected' WHERE id=?").run(req.params.id);
   notify(req.params.id, 'qualify_rejected', '资质审核未通过', reason || '请重新提交资质', null);
   res.json({ ok: true });

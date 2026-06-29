@@ -264,26 +264,36 @@ router.post('/qualify', authRequired, (req, res) => {
     return res.status(400).json({ error: '请至少上传 1 张鸡场实景照' });
   }
 
+  const fields = {
+    name, region, address, business_license, contact_name,
+    daily_output: Number(daily_output) || null,
+    main_products: main_products || null,
+    farm_size_int: Number(farm_size_int) || null,
+    license_photos: JSON.stringify(license_photos),
+    farm_photos: JSON.stringify(farm_photos),
+    quarantine_photos: JSON.stringify(quarantine_photos || []),
+  };
+
+  // 已通过的用户重新提交：把新资料存进 license_pending 快照，正式字段不动，
+  // 状态改 pending；审核通过时再由 admin 覆盖。其它状态（none/rejected/pending）
+  // 没有"在生效的正式资质"需要保护，直接写正式字段。
+  if (req.user.license_status === 'approved') {
+    db.prepare(`UPDATE users SET license_pending=?, license_status='pending' WHERE id=?`)
+      .run(JSON.stringify(fields), req.user.id);
+    return res.json({ ok: true, message: '修改已提交，审核通过前仍按现有资质生效' });
+  }
+
   db.prepare(`
     UPDATE users SET
-      name=COALESCE(?,name),
-      region=COALESCE(?,region),
-      address=COALESCE(?,address),
-      business_license=?,
-      contact_name=?,
-      daily_output=?,
-      main_products=?,
-      farm_size_int=?,
-      license_photos=?,
-      farm_photos=?,
-      quarantine_photos=?,
+      name=COALESCE(?,name), region=COALESCE(?,region), address=COALESCE(?,address),
+      business_license=?, contact_name=?, daily_output=?, main_products=?, farm_size_int=?,
+      license_photos=?, farm_photos=?, quarantine_photos=?, license_pending=NULL,
       license_status='pending'
     WHERE id=?
   `).run(
-    name, region, address, business_license, contact_name,
-    Number(daily_output) || null, main_products || null, Number(farm_size_int) || null,
-    JSON.stringify(license_photos), JSON.stringify(farm_photos),
-    JSON.stringify(quarantine_photos || []),
+    fields.name, fields.region, fields.address, fields.business_license, fields.contact_name,
+    fields.daily_output, fields.main_products, fields.farm_size_int,
+    fields.license_photos, fields.farm_photos, fields.quarantine_photos,
     req.user.id,
   );
   res.json({ ok: true, message: '资质已提交，平台 1-3 个工作日内审核' });
