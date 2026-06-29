@@ -7,6 +7,8 @@ const { notify } = require('../services/notification');
 const router = express.Router();
 router.use(authRequired, roleRequired('admin'));
 
+function safeJson(s) { try { return JSON.parse(s); } catch (e) { return null; } }
+
 router.get('/admins', (req, res) => {
   const rows = db.prepare(`
     SELECT id, username, name, phone, created_at, banned
@@ -139,6 +141,7 @@ router.get('/resources', (req, res) => {
   const rows = db.prepare(`
     SELECT r.*, u.name AS farm_name FROM resources r
     JOIN users u ON u.id = r.farm_id
+    WHERE r.deleted_at IS NULL
     ORDER BY r.created_at DESC LIMIT 500
   `).all();
   res.json({
@@ -156,6 +159,54 @@ router.post('/resources/:id/takedown', (req, res) => {
   db.prepare(`UPDATE resources SET status='cancelled' WHERE id=?`).run(r.id);
   notify(r.farm_id, 'resource_takedown', '资源已下架', `「${r.title}」被平台下架：${reason || '违规'}`, r.id);
   res.json({ ok: true });
+});
+
+// 管理员编辑资源（标题 / 描述 / 起报价 / 数量）
+router.patch('/resources/:id', (req, res) => {
+  const r = db.prepare('SELECT * FROM resources WHERE id=?').get(req.params.id);
+  if (!r) return res.status(404).json({ error: '资源不存在' });
+  const { title, description, start_price, quantity } = req.body;
+  db.prepare(`
+    UPDATE resources SET
+      title=COALESCE(?,title), description=COALESCE(?,description),
+      start_price=COALESCE(?,start_price), quantity=COALESCE(?,quantity)
+    WHERE id=?
+  `).run(
+    title || null, description || null,
+    start_price != null ? Number(start_price) : null,
+    quantity != null ? Number(quantity) : null,
+    r.id,
+  );
+  res.json({ ok: true });
+});
+
+// 管理员删除资源（软删除）
+router.delete('/resources/:id', (req, res) => {
+  const r = db.prepare('SELECT * FROM resources WHERE id=?').get(req.params.id);
+  if (!r) return res.status(404).json({ error: '资源不存在' });
+  db.prepare(`UPDATE resources SET deleted_at=? WHERE id=?`).run(Date.now(), r.id);
+  res.json({ ok: true });
+});
+
+// 订单列表 + 成交详情（管理员查看跟进）
+router.get('/orders', (req, res) => {
+  const rows = db.prepare(`
+    SELECT o.*, r.title AS resource_title, r.kind, r.weight_specs, r.truck_type,
+           r.egg_color, r.weight_spec,
+           f.name AS farm_name, f.phone AS farm_phone,
+           b.name AS buyer_name, b.phone AS buyer_phone
+    FROM orders o
+    JOIN resources r ON r.id = o.resource_id
+    JOIN users f ON f.id = o.farm_id
+    JOIN users b ON b.id = o.buyer_id
+    ORDER BY o.created_at DESC LIMIT 500
+  `).all();
+  res.json({
+    orders: rows.map(o => ({
+      ...o,
+      weight_specs: o.weight_specs ? safeJson(o.weight_specs) : null,
+    })),
+  });
 });
 
 router.get('/deposits', (req, res) => {
