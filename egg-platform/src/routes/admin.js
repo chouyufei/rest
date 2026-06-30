@@ -138,12 +138,19 @@ router.post('/users/:id/ban', (req, res) => {
 });
 
 router.get('/resources', (req, res) => {
-  const rows = db.prepare(`
-    SELECT r.*, u.name AS farm_name FROM resources r
+  const { kind, status } = req.query;
+  let sql = `
+    SELECT r.*, u.name AS farm_name, u.phone AS farm_phone,
+           (SELECT COUNT(*) FROM bids b WHERE b.resource_id = r.id) AS bid_count
+    FROM resources r
     JOIN users u ON u.id = r.farm_id
     WHERE r.deleted_at IS NULL
-    ORDER BY r.created_at DESC LIMIT 500
-  `).all();
+  `;
+  const params = [];
+  if (kind)   { sql += ' AND COALESCE(r.kind,\'supply\')=?'; params.push(kind); }
+  if (status) { sql += ' AND r.status=?'; params.push(status); }
+  sql += ' ORDER BY r.created_at DESC LIMIT 500';
+  const rows = db.prepare(sql).all(...params);
   res.json({
     resources: rows.map(r => ({
       ...r,
