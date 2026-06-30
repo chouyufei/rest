@@ -3,9 +3,18 @@ const otpStore = require('./otp');
 const PROVIDER = process.env.SMS_PROVIDER || '';
 const SIGN_NAME = process.env.SMS_SIGN_NAME || '';
 const TEMPLATE_CODE = process.env.SMS_TEMPLATE_CODE || '';
-// 通知模板：买卖方（2657517）/ 平台方（2657523）
-const NOTICE_USER_TEMPLATE = process.env.SMS_NOTICE_USER_TEMPLATE || '2657517';
+// 通知模板：平台方（2657523）
 const NOTICE_PLATFORM_TEMPLATE = process.env.SMS_NOTICE_PLATFORM_TEMPLATE || '2657523';
+// 买卖方通知：模板不支持参数，按提醒类型选用不同模板 ID
+//   订单提醒 → 2657517 ；报价提醒 → 2673307 ；货源提醒 → 2673308
+const NOTICE_TPL_ORDER  = process.env.SMS_NOTICE_TPL_ORDER  || '2657517';
+const NOTICE_TPL_QUOTE  = process.env.SMS_NOTICE_TPL_QUOTE  || '2673307';
+const NOTICE_TPL_SUPPLY = process.env.SMS_NOTICE_TPL_SUPPLY || '2673308';
+function pickNoticeTemplate(typeText) {
+  if (typeText === '报价提醒') return NOTICE_TPL_QUOTE;
+  if (typeText === '货源提醒') return NOTICE_TPL_SUPPLY;
+  return NOTICE_TPL_ORDER; // 默认订单提醒
+}
 const ACCESS_KEY_ID = process.env.SMS_ACCESS_KEY_ID || '';
 const ACCESS_KEY_SECRET = process.env.SMS_ACCESS_KEY_SECRET || '';
 
@@ -16,19 +25,18 @@ function genCode() {
   return String(Math.floor(100000 + Math.random() * 900000));
 }
 
-// 通知给买卖方。typeText 为提醒类型（如「报价提醒」「订单提醒」「货源提醒」），
-// 作为模板变量 ${type} 下发，让短信正文随场景变化，而不是永远显示「订单提醒」。
-// 注意：阿里云短信模板需含 ${type} 变量，正文形如：
-//   您在凤伯乐有新的${type}，请进入凤伯乐或者订阅消息进行查看
+// 通知给买卖方。typeText 为提醒类型（「报价提醒」「订单提醒」「货源提醒」）。
+// 模板不支持参数，按类型选用不同模板 ID，正文固定、无需传参。
 async function sendUserNotice(phone, resourceTitle, typeText) {
   const type = typeText || '订单提醒';
+  const template = pickNoticeTemplate(type);
   if (!noticeLive) {
-    console.log(`[SMS-用户·demo] → ${phone} 模板=${NOTICE_USER_TEMPLATE} 类型="${type}" 上下文="${resourceTitle}"`);
+    console.log(`[SMS-用户·demo] → ${phone} 模板=${template} 类型="${type}" 上下文="${resourceTitle}"`);
     return { ok: true, demo: true };
   }
   try {
-    if (PROVIDER === 'tencent') await sendViaTencent(phone, [type], NOTICE_USER_TEMPLATE);
-    else if (PROVIDER === 'aliyun') await sendViaAliyun(phone, { type }, NOTICE_USER_TEMPLATE);
+    if (PROVIDER === 'tencent') await sendViaTencent(phone, [], template);
+    else if (PROVIDER === 'aliyun') await sendViaAliyun(phone, {}, template);
     return { ok: true };
   } catch (e) {
     console.warn('SMS user notice failed:', e.message);
