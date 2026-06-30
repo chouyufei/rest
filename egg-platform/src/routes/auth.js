@@ -141,15 +141,12 @@ router.post('/wechat-login', async (req, res) => {
         VALUES (?, ?, ?, ?, ?, ?)
       `).run(
         placeholderPhone, createRole, name || (createRole === 'farm' ? '微信养殖场' : '微信采购商'),
-        createRole === 'farm' ? 'pending' : 'none', session.openid, Date.now(),
+        'none', session.openid, Date.now(),
       );
       user = db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
     } else if (requestedRole && requestedRole !== user.role && user.role !== 'admin') {
-      let newLicStatus = user.license_status;
-      if (requestedRole === 'farm' && (!newLicStatus || newLicStatus === 'none')) newLicStatus = 'pending';
-      if (requestedRole === 'buyer' && newLicStatus === 'pending') newLicStatus = 'none';
-      db.prepare('UPDATE users SET role=?, license_status=? WHERE id=?')
-        .run(requestedRole, newLicStatus, user.id);
+      // 仅切换角色，资质状态保持不变（资质与角色解耦）
+      db.prepare('UPDATE users SET role=? WHERE id=?').run(requestedRole, user.id);
       user = db.prepare('SELECT * FROM users WHERE id=?').get(user.id);
     }
     if (user.banned) return res.status(403).json({ error: '账户已被冻结' });
@@ -172,11 +169,9 @@ router.post('/switch-role', authRequired, (req, res) => {
   if (req.user.role === role) {
     return res.json({ ok: true, user: req.user });
   }
-  let newLicStatus = req.user.license_status;
-  if (role === 'farm' && (!newLicStatus || newLicStatus === 'none')) newLicStatus = 'pending';
-  if (role === 'buyer' && newLicStatus === 'pending') newLicStatus = 'none';
-  db.prepare('UPDATE users SET role=?, license_status=? WHERE id=?')
-    .run(role, newLicStatus, req.user.id);
+  // 资质状态与角色解耦：切换 buy/sell 模式只改 role，不再改动 license_status，
+  // 避免切到采购商时把已提交/已通过的资质冲掉（用户既可能是采购商也可能是养殖场）。
+  db.prepare('UPDATE users SET role=? WHERE id=?').run(role, req.user.id);
   const user = db.prepare('SELECT * FROM users WHERE id=?').get(req.user.id);
   res.json({ ok: true, user });
 });
@@ -200,11 +195,8 @@ function upsertUser({ phone, role, name }) {
   let user = db.prepare('SELECT * FROM users WHERE phone = ?').get(phone);
   if (user) {
     if (requestedRole && requestedRole !== user.role && user.role !== 'admin') {
-      let newLicStatus = user.license_status;
-      if (requestedRole === 'farm' && (!newLicStatus || newLicStatus === 'none')) newLicStatus = 'pending';
-      if (requestedRole === 'buyer' && newLicStatus === 'pending') newLicStatus = 'none';
-      db.prepare('UPDATE users SET role=?, license_status=? WHERE id=?')
-        .run(requestedRole, newLicStatus, user.id);
+      // 仅切换角色，资质状态保持不变（资质与角色解耦）
+      db.prepare('UPDATE users SET role=? WHERE id=?').run(requestedRole, user.id);
       user = db.prepare('SELECT * FROM users WHERE id=?').get(user.id);
     }
     return user;
@@ -213,7 +205,7 @@ function upsertUser({ phone, role, name }) {
   const info = db.prepare(`
     INSERT INTO users (phone, role, name, license_status, created_at)
     VALUES (?, ?, ?, ?, ?)
-  `).run(phone, createRole, name || `用户${phone.slice(-4)}`, createRole === 'farm' ? 'pending' : 'none', Date.now());
+  `).run(phone, createRole, name || `用户${phone.slice(-4)}`, 'none', Date.now());
   return db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
 }
 
@@ -247,7 +239,9 @@ router.patch('/me', authRequired, (req, res) => {
 });
 
 router.post('/qualify', authRequired, (req, res) => {
-  if (req.user.role !== 'farm') return res.status(403).json({ error: '只有养殖场需要资质认证' });
+  // 同一个用户既可能是采购商也可能是养殖场（首页切换 buy/sell 会改 role）。
+  // 资质认证是对经营主体的认证，与当前 UI 角色无关 —— 任何登录用户都可提交，
+  // 不再用 role 拦截，避免切到采购商时无法提交审核。
   const {
     name, region, address, business_license, contact_name,
     daily_output, main_products, farm_size_int,
