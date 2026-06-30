@@ -100,7 +100,8 @@ router.get('/seller/:userId', (req, res) => {
     FROM users WHERE id=?
   `).get(req.params.userId);
   if (!u) return res.status(404).json({ error: '卖家不存在' });
-  if (u.role !== 'farm') return res.status(400).json({ error: '该用户不是养殖场' });
+  // 信用数据来自该用户发布过的货源（farm_id），与当前 buy/sell 角色无关。
+  // 用户既可能是采购商也可能是养殖场，只要有信用数据就展示，不再按 role 拦截。
 
   const stats = db.prepare(`
     SELECT
