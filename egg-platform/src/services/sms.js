@@ -16,15 +16,19 @@ function genCode() {
   return String(Math.floor(100000 + Math.random() * 900000));
 }
 
-// 通知给买卖方：模板正文固定，无需参数
-async function sendUserNotice(phone, resourceTitle, resultText) {
+// 通知给买卖方。typeText 为提醒类型（如「报价提醒」「订单提醒」「货源提醒」），
+// 作为模板变量 ${type} 下发，让短信正文随场景变化，而不是永远显示「订单提醒」。
+// 注意：阿里云短信模板需含 ${type} 变量，正文形如：
+//   您在凤伯乐有新的${type}，请进入凤伯乐或者订阅消息进行查看
+async function sendUserNotice(phone, resourceTitle, typeText) {
+  const type = typeText || '订单提醒';
   if (!noticeLive) {
-    console.log(`[SMS-用户·demo] → ${phone} 模板=${NOTICE_USER_TEMPLATE} 上下文="${resourceTitle}/${resultText}"`);
+    console.log(`[SMS-用户·demo] → ${phone} 模板=${NOTICE_USER_TEMPLATE} 类型="${type}" 上下文="${resourceTitle}"`);
     return { ok: true, demo: true };
   }
   try {
-    if (PROVIDER === 'tencent') await sendViaTencent(phone, [], NOTICE_USER_TEMPLATE);
-    else if (PROVIDER === 'aliyun') await sendViaAliyun(phone, {}, NOTICE_USER_TEMPLATE);
+    if (PROVIDER === 'tencent') await sendViaTencent(phone, [type], NOTICE_USER_TEMPLATE);
+    else if (PROVIDER === 'aliyun') await sendViaAliyun(phone, { type }, NOTICE_USER_TEMPLATE);
     return { ok: true };
   } catch (e) {
     console.warn('SMS user notice failed:', e.message);

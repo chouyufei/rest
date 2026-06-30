@@ -26,19 +26,16 @@ function dispatchUserChannels(user, scenario, resourceTitle, resourceId, isSelle
   // 短信：分卖方/买方开关
   const enable = isSeller ? settings.get('notify_seller_sms') : settings.get('notify_buyer_sms');
   if (enable && isRealPhone(user.phone)) {
-    const resultText = wechatResultText(scenario);
-    sms.sendUserNotice(user.phone, resourceTitle, resultText);
+    sms.sendUserNotice(user.phone, resourceTitle, smsNoticeType(scenario));
   }
 }
 
-function wechatResultText(scenario) {
-  return ({
-    buyer_won: '货源报价成功',
-    buyer_lost: '货源报价失败',
-    seller: '您的货源已被成功报价',
-    new_bid: '您发布的货源收到新报价',
-    outbid: '您的报价已被超过',
-  }[scenario]) || scenario;
+// 短信提醒类型（对应模板 ${type} 变量）：报价类事件显示「报价提醒」，
+// 成交/订单类显示「订单提醒」，附近新货源/求购显示「货源提醒」。
+function smsNoticeType(scenario) {
+  if (scenario === 'new_bid' || scenario === 'outbid') return '报价提醒';
+  if (scenario === 'nearby') return '货源提醒';
+  return '订单提醒';
 }
 
 // 通知平台方（企业微信 + 短信，按 settings）
@@ -164,6 +161,9 @@ function notifyNearbyOnPublish(resource) {
     SELECT id, phone, wechat_openid, lat, lng FROM users
     WHERE lat IS NOT NULL AND lng IS NOT NULL AND id != ? AND COALESCE(banned,0)=0
   `).all(resource.farm_id);
+  // 货源(supply)的附近推送对象是潜在采购商→走买方短信开关；
+  // 求购(demand)的对象是潜在养殖场→走卖方短信开关。
+  const smsEnable = isSupply ? settings.get('notify_buyer_sms') : settings.get('notify_seller_sms');
   let sent = 0;
   const page = '/pages/resource-detail/resource-detail?id=' + resource.id;
   const title = isSupply ? '附近有新货源' : '附近有新求购';
@@ -173,6 +173,7 @@ function notifyNearbyOnPublish(resource) {
     notify(u.id, 'nearby_publish', title,
       `${Math.round(d)}km 内${isSupply ? '新货源' : '新求购'}：「${resource.title}」`, resource.id);
     wechat.send(u.wechat_openid, 'nearby', resource.title, page);
+    if (smsEnable && isRealPhone(u.phone)) sms.sendUserNotice(u.phone, resource.title, '货源提醒');
     sent++;
   }
   if (sent) console.log(`[push] 资源 #${resource.id} 推送给 ${sent} 名附近用户（半径 ${radius}km）`);
