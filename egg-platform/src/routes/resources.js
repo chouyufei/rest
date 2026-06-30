@@ -313,7 +313,9 @@ router.post('/:id/relist', authRequired, (req, res) => {
     b.defect_rate != null ? Number(b.defect_rate) : null, b.defect_note || null,
     b.pack_size != null && b.pack_size !== '' ? Number(b.pack_size) : null,
     b.yolk_color || null, b.yolk_shade || null, b.truck_type || null,
-    b.weight_specs ? (typeof b.weight_specs === 'string' ? b.weight_specs : JSON.stringify(b.weight_specs)) : null,
+    b.weight_specs != null
+      ? (typeof b.weight_specs === 'string' ? b.weight_specs : JSON.stringify(b.weight_specs))
+      : (old.weight_specs || null),   // 客户端未回传时，沿用流拍前存的箱数/价格，避免被清空
     snapLat, snapLng, old.id,
   );
 
