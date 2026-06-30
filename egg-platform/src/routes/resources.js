@@ -293,6 +293,16 @@ router.post('/:id/relist', authRequired, (req, res) => {
   const snapLat = (b.lat != null ? Number(b.lat) : (me && me.lat)) ?? null;
   const snapLng = (b.lng != null ? Number(b.lng) : (me && me.lng)) ?? null;
 
+  // 求购"允许参与地区"：客户端回传则按回传更新（数组→JSON，不限→NULL）；
+  // 完全未带该字段时沿用原值，避免重新上架把已选地区清掉。
+  let relistAllow;
+  if (b.allow_provinces === undefined) {
+    relistAllow = old.allow_provinces;
+  } else {
+    relistAllow = (kind === 'demand' && Array.isArray(b.allow_provinces) && b.allow_provinces.length)
+      ? JSON.stringify(b.allow_provinces) : null;
+  }
+
   db.prepare(`
     UPDATE resources SET
       title=?, region=?, province=?, chicken_breed=?, egg_color=?, weight_spec=?,
@@ -301,7 +311,7 @@ router.post('/:id/relist', authRequired, (req, res) => {
       start_at=?, end_at=?, extend_count=0, status='auctioning',
       unit_label=?, unit_size=?, intro_video=?, defect_rate=?, defect_note=?,
       pack_size=?, yolk_color=?, yolk_shade=?, truck_type=?, weight_specs=?,
-      lat=?, lng=?
+      allow_provinces=?, lat=?, lng=?
     WHERE id=?
   `).run(
     b.title || old.title, b.region || old.region, b.province || old.province,
@@ -316,6 +326,7 @@ router.post('/:id/relist', authRequired, (req, res) => {
     b.weight_specs != null
       ? (typeof b.weight_specs === 'string' ? b.weight_specs : JSON.stringify(b.weight_specs))
       : (old.weight_specs || null),   // 客户端未回传时，沿用流拍前存的箱数/价格，避免被清空
+    relistAllow,
     snapLat, snapLng, old.id,
   );
 
