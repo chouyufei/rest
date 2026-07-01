@@ -23,9 +23,12 @@ router.post('/', authRequired, (req, res) => {
     let allow = [];
     try { allow = JSON.parse(r.allow_provinces) || []; } catch (e) {}
     if (allow.length) {
-      // 同时匹配「所在省份 region」与「详细地址 address」，避免 region 只存了
-      // 城市/定位名、而省份写在详细地址里时被误拦。
-      const hay = String(req.user.region || '') + ' ' + String(req.user.address || '');
+      // 以「主页选择的位置」为准（loc_name + loc_address）；未设置时回退到资质
+      // 资料的所在省份/详细地址，避免没设过主页位置的用户被硬拦。
+      const homeLoc = String(req.user.loc_name || '') + ' ' + String(req.user.loc_address || '');
+      const hay = homeLoc.trim()
+        ? homeLoc
+        : String(req.user.region || '') + ' ' + String(req.user.address || '');
       const ok = allow.some(p => hay.indexOf(p) >= 0);
       if (!ok) {
         return res.status(403).json({ error: `该求购仅限 ${allow.join('、')} 的养殖场参与，您所在地区不符合` });

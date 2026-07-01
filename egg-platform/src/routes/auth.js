@@ -220,8 +220,15 @@ router.post('/location', authRequired, (req, res) => {
   const lng = Number(req.body.lng);
   if (!isFinite(lat) || !isFinite(lng)) return res.status(400).json({ error: '经纬度无效' });
   if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return res.status(400).json({ error: '经纬度范围越界' });
-  db.prepare(`UPDATE users SET lat=?, lng=?, location_updated_at=? WHERE id=?`)
-    .run(lat, lng, Date.now(), req.user.id);
+  // 主页选择位置带来的名称/详细地址（含省份），用于求购"允许参与地区"匹配。
+  // 仅在本次带了文本时更新，避免 GPS 自动上报（无地址）把已选地址覆盖成空。
+  const name = req.body.name != null ? String(req.body.name) : null;
+  const address = req.body.address != null ? String(req.body.address) : null;
+  db.prepare(`
+    UPDATE users SET lat=?, lng=?, location_updated_at=?,
+      loc_name=COALESCE(?, loc_name), loc_address=COALESCE(?, loc_address)
+    WHERE id=?
+  `).run(lat, lng, Date.now(), name, address, req.user.id);
   res.json({ ok: true });
 });
 

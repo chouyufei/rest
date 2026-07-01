@@ -192,6 +192,8 @@ addColumnIfMissing('users', 'license_pending', 'license_pending TEXT');         
 addColumnIfMissing('users', 'lat', 'lat REAL');                                   // 用户最近一次定位
 addColumnIfMissing('users', 'lng', 'lng REAL');
 addColumnIfMissing('users', 'location_updated_at', 'location_updated_at INTEGER');
+addColumnIfMissing('users', 'loc_name', 'loc_name TEXT');                         // 主页选择位置的名称
+addColumnIfMissing('users', 'loc_address', 'loc_address TEXT');                   // 主页选择位置的详细地址（含省份，用于求购地区匹配）
 
 addColumnIfMissing('resources', 'last_bid_at', 'last_bid_at INTEGER');
 addColumnIfMissing('resources', 'unit_size', "unit_size TEXT DEFAULT '车'");
