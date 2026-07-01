@@ -173,7 +173,10 @@ function notifyNearbyOnPublish(resource) {
     notify(u.id, 'nearby_publish', title,
       `${Math.round(d)}km 内${isSupply ? '新货源' : '新求购'}：「${resource.title}」`, resource.id);
     wechat.send(u.wechat_openid, 'nearby', resource.title, page);
-    if (smsEnable && isRealPhone(u.phone)) sms.sendUserNotice(u.phone, resource.title, '货源提醒');
+    // 附近货源 → 货源提醒；附近求购 → 采购提醒（分开两类短信）
+    if (smsEnable && isRealPhone(u.phone)) {
+      sms.sendUserNotice(u.phone, resource.title, isSupply ? '货源提醒' : '采购提醒');
+    }
     sent++;
   }
   if (sent) console.log(`[push] 资源 #${resource.id} 推送给 ${sent} 名附近用户（半径 ${radius}km）`);

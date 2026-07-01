@@ -6,13 +6,17 @@ const TEMPLATE_CODE = process.env.SMS_TEMPLATE_CODE || '';
 // 通知模板：平台方（2657523）
 const NOTICE_PLATFORM_TEMPLATE = process.env.SMS_NOTICE_PLATFORM_TEMPLATE || '2657523';
 // 买卖方通知：模板不支持参数，按提醒类型选用不同模板 ID
-//   订单提醒 → 2657517 ；报价提醒 → 2673307 ；货源提醒 → 2673308
+//   订单提醒 → 2657517 ；报价提醒 → 2673307 ；货源提醒 → 2673308 ；采购提醒 → 需新建模板
 const NOTICE_TPL_ORDER  = process.env.SMS_NOTICE_TPL_ORDER  || '2657517';
 const NOTICE_TPL_QUOTE  = process.env.SMS_NOTICE_TPL_QUOTE  || '2673307';
 const NOTICE_TPL_SUPPLY = process.env.SMS_NOTICE_TPL_SUPPLY || '2673308';
+// 采购(求购)提醒：需在短信控制台新建模板后配 SMS_NOTICE_TPL_DEMAND；
+// 未配置时回退到货源提醒模板，保证短信仍能发出。
+const NOTICE_TPL_DEMAND = process.env.SMS_NOTICE_TPL_DEMAND || NOTICE_TPL_SUPPLY;
 function pickNoticeTemplate(typeText) {
   if (typeText === '报价提醒') return NOTICE_TPL_QUOTE;
   if (typeText === '货源提醒') return NOTICE_TPL_SUPPLY;
+  if (typeText === '采购提醒') return NOTICE_TPL_DEMAND;
   return NOTICE_TPL_ORDER; // 默认订单提醒
 }
 const ACCESS_KEY_ID = process.env.SMS_ACCESS_KEY_ID || '';
