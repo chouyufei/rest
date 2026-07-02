@@ -255,8 +255,8 @@ router.post('/qualify', authRequired, (req, res) => {
     license_photos, farm_photos, quarantine_photos,
   } = req.body;
 
-  if (!name || !contact_name || !address || !business_license) {
-    return res.status(400).json({ error: '请填写鸡场名称/联系人/地址/营业执照编号' });
+  if (!name || !contact_name || !address) {
+    return res.status(400).json({ error: '请填写鸡场名称/联系人/地址' });
   }
   if (!Array.isArray(license_photos) || !license_photos.length) {
     return res.status(400).json({ error: '请上传营业执照照片' });
