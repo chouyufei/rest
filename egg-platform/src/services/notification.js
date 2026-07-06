@@ -18,10 +18,13 @@ function getUser(userId) {
 
 function isRealPhone(p) { return typeof p === 'string' && /^1\d{10}$/.test(p); }
 
-// 内部：发给某个用户（买/卖），按 settings 开关决定是否发短信
-function dispatchUserChannels(user, scenario, resourceTitle, resourceId, isSeller) {
+// 内部：发给某个用户（买/卖），按 settings 开关决定是否发短信。
+// opts.skipWechat=true 时不发微信订阅消息（用于给发布方"预留"唯一一次订阅
+// 额度到成交通知——微信一次性订阅每次授权只能发 1 条，若被每次报价消耗掉，
+// 成交时就没额度了。发布方每次报价仍走站内信 + 短信）。
+function dispatchUserChannels(user, scenario, resourceTitle, resourceId, isSeller, opts = {}) {
   const page = '/pages/resource-detail/resource-detail?id=' + resourceId;
-  wechat.send(user.wechat_openid, scenario, resourceTitle, page);
+  if (!opts.skipWechat) wechat.send(user.wechat_openid, scenario, resourceTitle, page);
 
   // 短信：分卖方/买方开关
   const enable = isSeller ? settings.get('notify_seller_sms') : settings.get('notify_buyer_sms');
@@ -139,7 +142,8 @@ function notifyNewBidToPublisher(userId, resource, price, isSupply) {
   const u = getUser(userId); if (!u) return;
   notify(u.id, 'new_bid', isSupply ? '收到新报价' : '收到新应标',
     `「${resource.title}」收到新报价 ¥${price}`, resource.id);
-  dispatchUserChannels(u, 'new_bid', resource.title, resource.id, true);
+  // 发布方每次报价走站内信 + 短信；微信订阅额度预留给成交通知（见 dispatchUserChannels 说明）
+  dispatchUserChannels(u, 'new_bid', resource.title, resource.id, true, { skipWechat: true });
 }
 
 // 场景：出价被超越 → 通知原出价者（站内 + 订阅消息 + 短信）
