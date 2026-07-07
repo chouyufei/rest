@@ -168,23 +168,45 @@ router.post('/resources/:id/takedown', (req, res) => {
   res.json({ ok: true });
 });
 
-// 管理员编辑资源（标题 / 描述 / 起报价 / 数量）
+// 管理员编辑资源：可改全部参数（含图片）。只更新请求里带到的字段。
+const EDITABLE_FIELDS = {
+  // 文本
+  title: 'text', description: 'text', region: 'text', province: 'text',
+  egg_color: 'text', chicken_breed: 'text', yolk_color: 'text', yolk_shade: 'text',
+  weight_spec: 'text', defect_note: 'text', truck_type: 'text',
+  unit_label: 'text', unit_size: 'text', intro_video: 'text',
+  // 数值
+  freshness_days: 'num', quantity: 'num', pack_size: 'num',
+  start_price: 'num', min_increment: 'num', current_price: 'num', defect_rate: 'num',
+  lat: 'num', lng: 'num',
+  // JSON（数组 → 存字符串）
+  photos: 'json', weight_specs: 'json', allow_provinces: 'json',
+};
 router.patch('/resources/:id', (req, res) => {
   const r = db.prepare('SELECT * FROM resources WHERE id=?').get(req.params.id);
   if (!r) return res.status(404).json({ error: '资源不存在' });
-  const { title, description, start_price, quantity } = req.body;
-  db.prepare(`
-    UPDATE resources SET
-      title=COALESCE(?,title), description=COALESCE(?,description),
-      start_price=COALESCE(?,start_price), quantity=COALESCE(?,quantity)
-    WHERE id=?
-  `).run(
-    title || null, description || null,
-    start_price != null ? Number(start_price) : null,
-    quantity != null ? Number(quantity) : null,
-    r.id,
-  );
-  res.json({ ok: true });
+
+  const sets = [];
+  const vals = [];
+  for (const [key, type] of Object.entries(EDITABLE_FIELDS)) {
+    if (!(key in req.body)) continue;           // 只改带过来的字段
+    let v = req.body[key];
+    if (type === 'num') {
+      v = (v === '' || v == null) ? null : Number(v);
+      if (v != null && !Number.isFinite(v)) continue;   // 跳过非法数字
+    } else if (type === 'json') {
+      v = v == null ? null : (typeof v === 'string' ? v : JSON.stringify(v));
+    } else {
+      v = (v == null) ? null : String(v);
+    }
+    sets.push(`${key}=?`);
+    vals.push(v);
+  }
+  if (!sets.length) return res.json({ ok: true, unchanged: true });
+
+  vals.push(r.id);
+  db.prepare(`UPDATE resources SET ${sets.join(', ')} WHERE id=?`).run(...vals);
+  res.json({ ok: true, resource: db.prepare('SELECT * FROM resources WHERE id=?').get(r.id) });
 });
 
 // 管理员删除资源（软删除）
