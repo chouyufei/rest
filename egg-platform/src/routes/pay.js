@@ -1,0 +1,419 @@
+const express = require('express');
+const db = require('../db');
+const { authRequired } = require('../middleware/auth');
+const { notify } = require('../services/notification');
+const { computeDepositAmount } = require('../services/auction');
+const balance = require('../services/balance');
+
+const router = express.Router();
+
+const WECHAT_APP_ID = process.env.WECHAT_APP_ID || '';
+const WECHAT_MCH_ID = process.env.WECHAT_MCH_ID || '';
+const WECHAT_API_V3_KEY = process.env.WECHAT_API_V3_KEY || '';
+const WECHAT_SERIAL_NO = process.env.WECHAT_SERIAL_NO || '';
+const WECHAT_PRIVATE_KEY = process.env.WECHAT_PRIVATE_KEY || '';
+const WECHAT_PUBLIC_KEY = process.env.WECHAT_PUBLIC_KEY || '';
+const WECHAT_NOTIFY_URL = process.env.WECHAT_NOTIFY_URL || '';
+// 新签约商户走「微信支付公钥模式」：商户后台下载一个公钥 PEM + 公钥 ID，
+// 不再有传统平台证书。配上以下两个 env 后，验签直接用这个公钥，
+// 跳过 GET /v3/certificates（那个接口会返 404 RESOURCE_NOT_EXISTS）。
+const WECHAT_PLATFORM_PUBLIC_KEY    = process.env.WECHAT_PLATFORM_PUBLIC_KEY    || '';
+const WECHAT_PLATFORM_PUBLIC_KEY_ID = process.env.WECHAT_PLATFORM_PUBLIC_KEY_ID || '';
+const usePublicKeyMode = !!(WECHAT_PLATFORM_PUBLIC_KEY && WECHAT_PLATFORM_PUBLIC_KEY_ID);
+
+const hasAllPayEnv = !!(WECHAT_APP_ID && WECHAT_MCH_ID && WECHAT_API_V3_KEY &&
+  WECHAT_SERIAL_NO && WECHAT_PRIVATE_KEY && WECHAT_PUBLIC_KEY && WECHAT_NOTIFY_URL);
+
+let pay = null;
+let lastCertError = '';
+
+// 微信支付公钥模式：手动把公钥灌进 SDK 的 Pay.certificates 静态字典，
+// verifySign 会按 serial 查到这个 PEM 直接验签，跳过 fetchCertificates。
+function primePublicKey(WxPayClass) {
+  if (!usePublicKeyMode) return false;
+  try {
+    const pem = WECHAT_PLATFORM_PUBLIC_KEY.includes('-----BEGIN')
+      ? WECHAT_PLATFORM_PUBLIC_KEY
+      : `-----BEGIN PUBLIC KEY-----\n${WECHAT_PLATFORM_PUBLIC_KEY}\n-----END PUBLIC KEY-----`;
+    WxPayClass.certificates = Object.assign({}, WxPayClass.certificates || {}, {
+      [WECHAT_PLATFORM_PUBLIC_KEY_ID]: pem,
+    });
+    console.log(`[init] 微信支付公钥模式已启用，公钥 ID=${WECHAT_PLATFORM_PUBLIC_KEY_ID}`);
+    return true;
+  } catch (e) {
+    console.warn('[init] 微信支付公钥灌入失败：' + e.message);
+    return false;
+  }
+}
+
+async function tryFetchCerts(tag = 'init') {
+  if (!pay) return;
+  // 公钥模式：跳过 /v3/certificates（新签约商户没有平台证书，会返 404）
+  if (usePublicKeyMode) {
+    lastCertError = '';
+    console.log(`[${tag}] 公钥模式：跳过 /v3/certificates 拉取`);
+    return { ok: true, mode: 'public_key' };
+  }
+  // SDK 的 get_certificates 在非 2xx 时只抛 "拉取平台证书失败"，丢了 HTTP 细节。
+  // 这里手动重跑同样的请求，把 status / body 打出来，便于定位 401 / 403 / 签名错。
+  try {
+    const url = 'https://api.mch.weixin.qq.com/v3/certificates';
+    const authorization = pay.buildAuthorization('GET', url);
+    const headers = pay.getHeaders(authorization, { 'Content-Type': 'application/json' });
+    const result = await pay.httpService.get(url, headers);
+    if (result && result.status === 200) {
+      await pay.get_certificates(WECHAT_API_V3_KEY);
+      lastCertError = '';
+      console.log(`[${tag}] 平台证书拉取成功`);
+      return { ok: true };
+    }
+    let wxCode = '', wxMessage = '';
+    if (result && result.error) {
+      try {
+        const parsed = typeof result.error === 'string' ? JSON.parse(result.error) : result.error;
+        wxCode = parsed.code || '';
+        wxMessage = parsed.message || '';
+      } catch (e) { wxMessage = String(result.error).slice(0, 300); }
+    }
+    lastCertError = `HTTP ${result && result.status} [${wxCode}] ${wxMessage}`;
+    let hint = '（常见原因：WECHAT_API_V3_KEY 错 / WECHAT_SERIAL_NO 与商户证书不匹配 / WECHAT_PRIVATE_KEY 换行被吞）';
+    if (result && result.status === 404 && wxCode === 'RESOURCE_NOT_EXISTS') {
+      hint = '（你的商户号是新签约的"微信支付公钥模式"，没有传统平台证书。请到 商户后台 → API 安全 → 微信支付公钥 下载公钥 + 公钥 ID，配进 .env 的 WECHAT_PLATFORM_PUBLIC_KEY 与 WECHAT_PLATFORM_PUBLIC_KEY_ID 然后重启服务）';
+    }
+    console.warn(`[${tag}] 平台证书拉取失败：${lastCertError}${hint}`);
+    return { ok: false, http_status: result && result.status, wx_code: wxCode, wx_message: wxMessage };
+  } catch (e) {
+    lastCertError = e.message || String(e);
+    console.warn(`[${tag}] 平台证书拉取异常：${lastCertError}`);
+    return { ok: false, error: lastCertError };
+  }
+}
+
+if (hasAllPayEnv) {
+  try {
+    const mod = require('wechatpay-node-v3');
+    const WxPay = mod.default || mod;
+    pay = new WxPay({
+      appid: WECHAT_APP_ID,
+      mchid: WECHAT_MCH_ID,
+      serial_no: WECHAT_SERIAL_NO,
+      publicKey: Buffer.from(WECHAT_PUBLIC_KEY),
+      privateKey: Buffer.from(WECHAT_PRIVATE_KEY),
+      key: WECHAT_API_V3_KEY,
+    });
+    console.log('微信支付已启用 mch_id=' + WECHAT_MCH_ID + ' serial_no=' + WECHAT_SERIAL_NO.slice(0, 12) + '…');
+    primePublicKey(WxPay);  // 公钥模式：把公钥直接灌进 SDK 静态字典
+    tryFetchCerts('init');
+  } catch (e) {
+    console.error('微信支付 SDK 初始化失败:', e.message);
+    pay = null;
+  }
+}
+
+const isLive = !!pay;
+
+router.get('/mode', (req, res) => {
+  res.json({
+    live: isLive,
+    mode: isLive ? 'wechat_pay' : 'demo',
+    message: isLive
+      ? '已接入微信支付'
+      : (hasAllPayEnv ? 'SDK 初始化失败，请检查证书格式' : '演示模式：跳过支付直接缴纳'),
+    mch_id: isLive ? WECHAT_MCH_ID : undefined,
+  });
+});
+
+router.post('/create-order', authRequired, async (req, res) => {
+  const { type } = req.body;
+  const resourceId = req.body.resource_id ? Number(req.body.resource_id) : null;
+  const qty = Number(req.body.qty) || 1;
+  if (!['farm_quality', 'buyer_bid', 'demand_quality'].includes(type)) {
+    return res.status(400).json({ error: '保证金类型错误' });
+  }
+  if (type === 'farm_quality' && req.user.role !== 'farm') return res.status(403).json({ error: '仅养殖场需缴纳服务保障金' });
+  if (type === 'farm_quality' && req.user.license_status !== 'approved') {
+    return res.status(403).json({ error: '请先完成资质审核' });
+  }
+  if (type === 'demand_quality' && req.user.role !== 'buyer') return res.status(403).json({ error: '仅采购商需缴纳求购保证金' });
+  if (type === 'buyer_bid' && !resourceId) return res.status(400).json({ error: '服务保障金需指定货源' });
+
+  const amount = computeDepositAmount(type, type === 'buyer_bid'
+    ? (db.prepare('SELECT quantity FROM resources WHERE id=?').get(resourceId)?.quantity || qty)
+    : qty);
+
+  // 查找已有可复用的保证金：
+  //   - 货源/求购：账户级共用，金额 ≥ 本次需缴即可（不再要求 resource_id IS NULL）
+  //   - 报价：按 resource_id 绑定，每场单独
+  const existing = type === 'buyer_bid'
+    ? db.prepare(`SELECT * FROM deposits WHERE user_id=? AND type='buyer_bid' AND resource_id=? AND status IN ('available','frozen')`).get(req.user.id, resourceId)
+    : db.prepare(`SELECT * FROM deposits WHERE user_id=? AND type=? AND amount>=? AND status IN ('available','frozen') ORDER BY amount DESC, paid_at DESC LIMIT 1`).get(req.user.id, type, amount);
+  if (existing) return res.json({ ok: true, paid: true, deposit: existing, message: '已缴纳保证金' });
+
+  if (!isLive) {
+    const orderNo = 'DEMO' + Date.now() + Math.floor(Math.random() * 1000);
+    const status = type === 'buyer_bid' ? 'frozen' : 'available';
+    const info = db.prepare(`
+      INSERT INTO deposits (user_id, type, amount, status, resource_id, note, paid_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(req.user.id, type, amount, status, resourceId, `演示订单 ${orderNo}`, Date.now());
+    const dep = db.prepare('SELECT * FROM deposits WHERE id=?').get(info.lastInsertRowid);
+    return res.json({ ok: true, demo: true, deposit: dep, message: `[演示] 已缴纳 ${amount} 元保证金` });
+  }
+
+  if (!req.user.wechat_openid) {
+    return res.status(400).json({ error: '需先用微信登录获取 openid 才能支付（微信小程序 JSAPI 要求）' });
+  }
+
+  const outTradeNo = 'EGGDEP' + Date.now() + req.user.id;
+  const totalFen = Math.round(amount * 100);
+
+  db.prepare(`
+    INSERT INTO pay_orders (out_trade_no, user_id, deposit_type, amount, status, resource_id, created_at)
+    VALUES (?, ?, ?, ?, 'pending', ?, ?)
+  `).run(outTradeNo, req.user.id, type, amount, resourceId, Date.now());
+
+  try {
+    const result = await pay.transactions_jsapi({
+      description: `凤伯乐${type === 'farm_quality' ? '品质' : '报价'}保证金`,
+      out_trade_no: outTradeNo,
+      notify_url: WECHAT_NOTIFY_URL,
+      amount: { total: totalFen, currency: 'CNY' },
+      payer: { openid: req.user.wechat_openid },
+    });
+
+    if (result.status !== 200 || !result.data || !result.data.paySign) {
+      db.prepare(`UPDATE pay_orders SET status='cancelled' WHERE out_trade_no=?`).run(outTradeNo);
+      const errMsg = (result.error && (result.error.message || result.error.code)) ||
+        (result.errRaw && JSON.stringify(result.errRaw)) ||
+        ('HTTP ' + result.status);
+      console.error('微信下单失败:', errMsg);
+      return res.status(400).json({ error: '微信下单失败: ' + errMsg });
+    }
+
+    const p = result.data;
+    return res.json({
+      ok: true,
+      timeStamp: p.timeStamp,
+      nonceStr: p.nonceStr,
+      package: p.package,
+      signType: p.signType || 'RSA',
+      paySign: p.paySign,
+      out_trade_no: outTradeNo,
+    });
+  } catch (e) {
+    console.error('微信下单异常:', e);
+    db.prepare(`UPDATE pay_orders SET status='cancelled' WHERE out_trade_no=?`).run(outTradeNo);
+    return res.status(500).json({ error: '微信下单异常: ' + (e.message || String(e)) });
+  }
+});
+
+// 钱包充值：用户输入金额 → 创建 pay_order(purpose=recharge) → 调起微信支付
+router.post('/recharge', authRequired, async (req, res) => {
+  const amount = Number(req.body.amount);
+  if (!(amount >= 1)) return res.status(400).json({ error: '充值金额至少 1 元' });
+  if (amount > 50000) return res.status(400).json({ error: '单笔充值上限 50000 元' });
+
+  if (!isLive) {
+    // 演示模式：直接入账
+    const orderNo = 'DEMO_RC' + Date.now() + Math.floor(Math.random() * 1000);
+    const info = db.prepare(`
+      INSERT INTO pay_orders (out_trade_no, user_id, deposit_type, amount, status, purpose, paid_at, created_at)
+      VALUES (?, ?, 'recharge', ?, 'paid', 'recharge', ?, ?)
+    `).run(orderNo, req.user.id, amount, Date.now(), Date.now());
+    balance.credit(req.user.id, amount, {
+      type: 'recharge',
+      ref_type: 'pay_order',
+      ref_id: info.lastInsertRowid,
+      note: `演示充值 ${orderNo}`,
+    });
+    return res.json({ ok: true, demo: true, out_trade_no: orderNo, message: `[演示] 已充值 ${amount} 元到钱包` });
+  }
+
+  if (!req.user.wechat_openid) {
+    return res.status(400).json({ error: '需用微信登录后才能充值' });
+  }
+
+  const outTradeNo = 'EGGRC' + Date.now() + req.user.id;
+  const totalFen = Math.round(amount * 100);
+  db.prepare(`
+    INSERT INTO pay_orders (out_trade_no, user_id, deposit_type, amount, status, purpose, created_at)
+    VALUES (?, ?, 'recharge', ?, 'pending', 'recharge', ?)
+  `).run(outTradeNo, req.user.id, amount, Date.now());
+
+  try {
+    const result = await pay.transactions_jsapi({
+      description: `凤伯乐钱包充值 ${amount} 元`,
+      out_trade_no: outTradeNo,
+      notify_url: WECHAT_NOTIFY_URL,
+      amount: { total: totalFen, currency: 'CNY' },
+      payer: { openid: req.user.wechat_openid },
+    });
+    if (result.status !== 200 || !result.data || !result.data.paySign) {
+      db.prepare(`UPDATE pay_orders SET status='cancelled' WHERE out_trade_no=?`).run(outTradeNo);
+      const errMsg = (result.error && (result.error.message || result.error.code)) || ('HTTP ' + result.status);
+      return res.status(400).json({ error: '微信下单失败: ' + errMsg });
+    }
+    const p = result.data;
+    res.json({
+      ok: true,
+      timeStamp: p.timeStamp,
+      nonceStr: p.nonceStr,
+      package: p.package,
+      signType: p.signType || 'RSA',
+      paySign: p.paySign,
+      out_trade_no: outTradeNo,
+    });
+  } catch (e) {
+    db.prepare(`UPDATE pay_orders SET status='cancelled' WHERE out_trade_no=?`).run(outTradeNo);
+    res.status(500).json({ error: '微信下单异常: ' + (e.message || String(e)) });
+  }
+});
+
+// 调试用：管理员手动刷新平台证书 + 看上次失败原因
+router.get('/wechat-pay-check', async (req, res) => {
+  if (!pay) return res.json({ enabled: false, reason: '环境变量未配齐，pay 未初始化' });
+  const r = await tryFetchCerts('manual');
+  res.json({
+    enabled: true,
+    mode: usePublicKeyMode ? 'public_key' : 'certificate',
+    mch_id: WECHAT_MCH_ID,
+    serial_no: WECHAT_SERIAL_NO,
+    notify_url: WECHAT_NOTIFY_URL,
+    public_key_id: usePublicKeyMode ? WECHAT_PLATFORM_PUBLIC_KEY_ID : null,
+    last_cert_error: lastCertError || null,
+    fetch: r,
+  });
+});
+
+router.post('/notify', async (req, res) => {
+  if (!pay) return res.status(503).json({ code: 'FAIL', message: '支付未启用' });
+
+  const rawBody = req.rawBody ? req.rawBody.toString('utf8') : JSON.stringify(req.body || {});
+  const h = req.headers;
+
+  let verified = false;
+  try {
+    verified = await pay.verifySign({
+      timestamp: h['wechatpay-timestamp'],
+      nonce: h['wechatpay-nonce'],
+      body: rawBody,
+      serial: h['wechatpay-serial'],
+      signature: h['wechatpay-signature'],
+      apiSecret: WECHAT_API_V3_KEY,
+    });
+  } catch (e) {
+    // SDK 抛 "拉取平台证书失败" 时，跑一次 tryFetchCerts 把真实 HTTP 错误打出来
+    if (/拉取平台证书失败/.test(e.message || '')) {
+      await tryFetchCerts('notify');
+      console.error('回调验签异常:', e.message, '|| 平台证书原始错误:', lastCertError);
+      return res.status(401).json({
+        code: 'FAIL',
+        message: '验签失败：' + e.message + (lastCertError ? '（' + lastCertError + '）' : ''),
+      });
+    }
+    console.error('回调验签异常:', e.message);
+    return res.status(401).json({ code: 'FAIL', message: '验签失败: ' + e.message });
+  }
+  if (!verified) {
+    console.warn('回调验签失败（signature mismatch）');
+    return res.status(401).json({ code: 'FAIL', message: '验签失败' });
+  }
+
+  let json;
+  try { json = JSON.parse(rawBody); }
+  catch (e) { return res.status(400).json({ code: 'FAIL', message: '解析失败' }); }
+
+  if (!json.resource) {
+    return res.json({ code: 'SUCCESS', message: '无 resource，已忽略' });
+  }
+
+  let payload;
+  try {
+    const r = json.resource;
+    payload = pay.decipher_gcm(r.ciphertext, r.associated_data, r.nonce);
+  } catch (e) {
+    console.error('回调解密失败:', e);
+    return res.status(500).json({ code: 'FAIL', message: '解密失败' });
+  }
+
+  const { out_trade_no, transaction_id, trade_state } = payload;
+  if (trade_state !== 'SUCCESS') {
+    return res.json({ code: 'SUCCESS', message: 'ack non-success: ' + trade_state });
+  }
+
+  const order = db.prepare('SELECT * FROM pay_orders WHERE out_trade_no=?').get(out_trade_no);
+  if (!order) return res.json({ code: 'SUCCESS', message: '未找到订单，已忽略' });
+  if (order.status === 'paid') return res.json({ code: 'SUCCESS', message: '已处理' });
+
+  fulfillOrder(order, transaction_id);
+  res.json({ code: 'SUCCESS', message: '成功' });
+});
+
+router.get('/check/:out_trade_no', authRequired, async (req, res) => {
+  const order = db.prepare('SELECT * FROM pay_orders WHERE out_trade_no=? AND user_id=?')
+    .get(req.params.out_trade_no, req.user.id);
+  if (!order) return res.status(404).json({ error: '订单不存在' });
+  if (order.status === 'paid') return res.json({ paid: true, order });
+  if (!isLive) return res.json({ paid: false, order });
+
+  try {
+    const result = await pay.query({ out_trade_no: req.params.out_trade_no });
+    if (result.status === 200 && result.data && result.data.trade_state === 'SUCCESS') {
+      fulfillOrder(order, result.data.transaction_id);
+      const fresh = db.prepare('SELECT * FROM pay_orders WHERE id=?').get(order.id);
+      return res.json({ paid: true, order: fresh });
+    }
+    res.json({
+      paid: false,
+      order,
+      trade_state: result.data && result.data.trade_state,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+function fulfillOrder(order, transactionId) {
+  const now = Date.now();
+  const tx = db.transaction(() => {
+    db.prepare(`UPDATE pay_orders SET status='paid', transaction_id=?, paid_at=? WHERE id=? AND status='pending'`)
+      .run(transactionId, now, order.id);
+
+    if (order.purpose === 'recharge') {
+      // 充值：直接入账钱包
+      // dedup：同一 pay_order 不重复 credit
+      const dup = db.prepare(`SELECT id FROM balance_transactions WHERE type='recharge' AND ref_type='pay_order' AND ref_id=?`).get(order.id);
+      if (!dup) {
+        balance.credit(order.user_id, order.amount, {
+          type: 'recharge',
+          ref_type: 'pay_order',
+          ref_id: order.id,
+          note: `微信充值 ${transactionId}`,
+        });
+      }
+      return;
+    }
+
+    // 旧的"按保证金支付"分支（向后兼容）
+    const exists = order.deposit_type === 'farm_quality'
+      ? db.prepare(`SELECT id FROM deposits WHERE user_id=? AND type='farm_quality' AND status IN ('available','frozen')`).get(order.user_id)
+      : db.prepare(`SELECT id FROM deposits WHERE user_id=? AND type='buyer_bid' AND resource_id=? AND status IN ('available','frozen')`).get(order.user_id, order.resource_id);
+    if (!exists) {
+      const status = order.deposit_type === 'buyer_bid' ? 'frozen' : 'available';
+      db.prepare(`
+        INSERT INTO deposits (user_id, type, amount, status, resource_id, note, paid_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(order.user_id, order.deposit_type, order.amount, status, order.resource_id, `微信支付 ${transactionId}`, now);
+    }
+  });
+  tx();
+  if (order.purpose === 'recharge') {
+    notify(order.user_id, 'recharge_paid', '充值成功',
+      `${order.amount} 元已到账钱包余额`, null);
+  } else {
+    notify(order.user_id, 'deposit_paid', '保证金已缴纳',
+      `${order.deposit_type === 'farm_quality' ? '品质' : '报价'}保证金 ${order.amount} 元已通过微信支付完成`, null);
+  }
+}
+
+module.exports = router;

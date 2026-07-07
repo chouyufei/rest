@@ -1,0 +1,554 @@
+const express = require('express');
+const bcrypt = require('bcryptjs');
+const db = require('../db');
+const { authRequired, roleRequired } = require('../middleware/auth');
+const { notify } = require('../services/notification');
+
+const router = express.Router();
+router.use(authRequired, roleRequired('admin'));
+
+function safeJson(s) { try { return JSON.parse(s); } catch (e) { return null; } }
+
+router.get('/admins', (req, res) => {
+  const rows = db.prepare(`
+    SELECT id, username, name, phone, created_at, banned
+    FROM users WHERE role='admin' AND username IS NOT NULL
+    ORDER BY created_at ASC
+  `).all();
+  res.json({ admins: rows });
+});
+
+router.post('/admins', (req, res) => {
+  const { username, password, name } = req.body;
+  if (!username || !password) return res.status(400).json({ error: '请填写账号和密码' });
+  if (!/^[a-zA-Z0-9_]{3,20}$/.test(username)) return res.status(400).json({ error: '账号需 3-20 位字母数字下划线' });
+  if (String(password).length < 6) return res.status(400).json({ error: '密码至少 6 位' });
+  const exists = db.prepare("SELECT id FROM users WHERE username=?").get(username);
+  if (exists) return res.status(400).json({ error: '账号已存在' });
+  const hashed = bcrypt.hashSync(password, 10);
+  const placeholderPhone = 'admin_' + username + '_' + Date.now().toString(36);
+  const info = db.prepare(`
+    INSERT INTO users (phone, username, password, name, role, license_status, created_at)
+    VALUES (?, ?, ?, ?, 'admin', 'none', ?)
+  `).run(placeholderPhone, username, hashed, name || username, Date.now());
+  const u = db.prepare('SELECT id, username, name, phone, created_at FROM users WHERE id=?').get(info.lastInsertRowid);
+  res.json({ ok: true, admin: u });
+});
+
+router.post('/admins/:id/reset-password', (req, res) => {
+  const { new_password } = req.body;
+  if (!new_password || String(new_password).length < 6) return res.status(400).json({ error: '密码至少 6 位' });
+  const target = db.prepare("SELECT id, role FROM users WHERE id=?").get(req.params.id);
+  if (!target || target.role !== 'admin') return res.status(404).json({ error: '管理员不存在' });
+  db.prepare('UPDATE users SET password=? WHERE id=?').run(bcrypt.hashSync(new_password, 10), target.id);
+  res.json({ ok: true, message: '密码已重置' });
+});
+
+router.delete('/admins/:id', (req, res) => {
+  const id = Number(req.params.id);
+  if (id === req.user.id) return res.status(400).json({ error: '不能删除自己' });
+  const target = db.prepare("SELECT id, role, username FROM users WHERE id=?").get(id);
+  if (!target || target.role !== 'admin') return res.status(404).json({ error: '管理员不存在' });
+  if (target.username === 'admin') return res.status(400).json({ error: '默认 admin 账号不可删除' });
+  const remaining = db.prepare("SELECT COUNT(*) c FROM users WHERE role='admin' AND banned=0").get().c;
+  if (remaining <= 1) return res.status(400).json({ error: '至少要保留 1 个管理员' });
+  db.prepare("UPDATE users SET banned=1, username=NULL WHERE id=?").run(id);
+  res.json({ ok: true });
+});
+
+router.get('/stats', (req, res) => {
+  const farmCount = db.prepare("SELECT COUNT(*) c FROM users WHERE role='farm'").get().c;
+  const buyerCount = db.prepare("SELECT COUNT(*) c FROM users WHERE role='buyer'").get().c;
+  const activeAuctions = db.prepare("SELECT COUNT(*) c FROM resources WHERE status='auctioning'").get().c;
+  const sold = db.prepare("SELECT COUNT(*) c, COALESCE(SUM(current_price),0) gmv FROM resources WHERE status='sold'").get();
+  const failed = db.prepare("SELECT COUNT(*) c FROM resources WHERE status='failed'").get().c;
+  const total = sold.c + failed;
+  const successRate = total === 0 ? 0 : Math.round((sold.c / total) * 100);
+  const avgPriceRow = db.prepare("SELECT AVG(current_price) a FROM resources WHERE status='sold'").get();
+  const avgPrice = avgPriceRow.a ? Number(avgPriceRow.a.toFixed(2)) : 0;
+  const startPriceAvgRow = db.prepare("SELECT AVG(start_price) a, AVG(current_price) b FROM resources WHERE status='sold'").get();
+  const premiumRate = startPriceAvgRow && startPriceAvgRow.a
+    ? Math.round(((startPriceAvgRow.b - startPriceAvgRow.a) / startPriceAvgRow.a) * 100)
+    : 0;
+  const openDisputes = db.prepare("SELECT COUNT(*) c FROM disputes WHERE status='open'").get().c;
+  res.json({
+    farmCount, buyerCount, activeAuctions,
+    soldCount: sold.c, failedCount: failed,
+    gmv: sold.gmv, avgPrice, successRate, premiumRate, openDisputes,
+  });
+});
+
+router.get('/users', (req, res) => {
+  const { role, status } = req.query;
+  let sql = 'SELECT * FROM users WHERE 1=1';
+  const params = [];
+  if (role) { sql += ' AND role=?'; params.push(role); }
+  if (status) { sql += ' AND license_status=?'; params.push(status); }
+  sql += ' ORDER BY created_at DESC LIMIT 500';
+  res.json({ users: db.prepare(sql).all(...params) });
+});
+
+router.post('/users/:id/approve', (req, res) => {
+  const u = db.prepare('SELECT license_pending FROM users WHERE id=?').get(req.params.id);
+  // 若存在 license_pending（approved 用户重新提交的快照），审核通过即覆盖正式字段
+  if (u && u.license_pending) {
+    let p = null;
+    try { p = JSON.parse(u.license_pending); } catch (e) {}
+    if (p) {
+      db.prepare(`
+        UPDATE users SET
+          name=COALESCE(?,name), region=COALESCE(?,region), address=COALESCE(?,address),
+          business_license=?, contact_name=?, daily_output=?, main_products=?, farm_size_int=?,
+          license_photos=?, farm_photos=?, quarantine_photos=?,
+          license_pending=NULL, license_status='approved'
+        WHERE id=?
+      `).run(
+        p.name, p.region, p.address, p.business_license, p.contact_name,
+        p.daily_output, p.main_products, p.farm_size_int,
+        p.license_photos, p.farm_photos, p.quarantine_photos,
+        req.params.id,
+      );
+      notify(req.params.id, 'qualify_approved', '资质审核通过', '您修改的资质已审核通过并生效', null);
+      return res.json({ ok: true });
+    }
+  }
+  db.prepare("UPDATE users SET license_status='approved', license_pending=NULL WHERE id=?").run(req.params.id);
+  notify(req.params.id, 'qualify_approved', '资质审核通过', '您的资质已审核通过，现在可以缴纳保证金并发布资源', null);
+  res.json({ ok: true });
+});
+
+router.post('/users/:id/reject', (req, res) => {
+  const { reason } = req.body;
+  const u = db.prepare('SELECT license_pending FROM users WHERE id=?').get(req.params.id);
+  // 重新提交被拒：保留原 approved 正式字段，仅丢弃 pending 快照、状态回 approved
+  if (u && u.license_pending) {
+    db.prepare("UPDATE users SET license_status='approved', license_pending=NULL WHERE id=?").run(req.params.id);
+    notify(req.params.id, 'qualify_rejected', '资质修改未通过', (reason || '修改未通过') + '，已保留您之前的资质信息', null);
+    return res.json({ ok: true });
+  }
+  db.prepare("UPDATE users SET license_status='rejected' WHERE id=?").run(req.params.id);
+  notify(req.params.id, 'qualify_rejected', '资质审核未通过', reason || '请重新提交资质', null);
+  res.json({ ok: true });
+});
+
+router.post('/users/:id/ban', (req, res) => {
+  const { ban } = req.body;
+  db.prepare('UPDATE users SET banned=? WHERE id=?').run(ban ? 1 : 0, req.params.id);
+  res.json({ ok: true });
+});
+
+router.get('/resources', (req, res) => {
+  const { kind, status } = req.query;
+  let sql = `
+    SELECT r.*, u.name AS farm_name, u.phone AS farm_phone,
+           (SELECT COUNT(*) FROM bids b WHERE b.resource_id = r.id) AS bid_count
+    FROM resources r
+    JOIN users u ON u.id = r.farm_id
+    WHERE r.deleted_at IS NULL
+  `;
+  const params = [];
+  if (kind)   { sql += ' AND COALESCE(r.kind,\'supply\')=?'; params.push(kind); }
+  if (status) { sql += ' AND r.status=?'; params.push(status); }
+  sql += ' ORDER BY r.created_at DESC LIMIT 500';
+  const rows = db.prepare(sql).all(...params);
+  res.json({
+    resources: rows.map(r => ({
+      ...r,
+      photos: r.photos ? JSON.parse(r.photos) : [],
+    }))
+  });
+});
+
+router.post('/resources/:id/takedown', (req, res) => {
+  const { reason } = req.body;
+  const r = db.prepare('SELECT * FROM resources WHERE id=?').get(req.params.id);
+  if (!r) return res.status(404).json({ error: '资源不存在' });
+  db.prepare(`UPDATE resources SET status='cancelled' WHERE id=?`).run(r.id);
+  notify(r.farm_id, 'resource_takedown', '资源已下架', `「${r.title}」被平台下架：${reason || '违规'}`, r.id);
+  res.json({ ok: true });
+});
+
+// 管理员编辑资源：可改全部参数（含图片）。只更新请求里带到的字段。
+const EDITABLE_FIELDS = {
+  // 文本
+  title: 'text', description: 'text', region: 'text', province: 'text',
+  egg_color: 'text', chicken_breed: 'text', yolk_color: 'text', yolk_shade: 'text',
+  weight_spec: 'text', defect_note: 'text', truck_type: 'text',
+  unit_label: 'text', unit_size: 'text', intro_video: 'text',
+  // 数值
+  freshness_days: 'num', quantity: 'num', pack_size: 'num',
+  start_price: 'num', min_increment: 'num', current_price: 'num', defect_rate: 'num',
+  lat: 'num', lng: 'num',
+  // JSON（数组 → 存字符串）
+  photos: 'json', weight_specs: 'json', allow_provinces: 'json',
+};
+router.patch('/resources/:id', (req, res) => {
+  const r = db.prepare('SELECT * FROM resources WHERE id=?').get(req.params.id);
+  if (!r) return res.status(404).json({ error: '资源不存在' });
+
+  const sets = [];
+  const vals = [];
+  for (const [key, type] of Object.entries(EDITABLE_FIELDS)) {
+    if (!(key in req.body)) continue;           // 只改带过来的字段
+    let v = req.body[key];
+    if (type === 'num') {
+      v = (v === '' || v == null) ? null : Number(v);
+      if (v != null && !Number.isFinite(v)) continue;   // 跳过非法数字
+    } else if (type === 'json') {
+      v = v == null ? null : (typeof v === 'string' ? v : JSON.stringify(v));
+    } else {
+      v = (v == null) ? null : String(v);
+    }
+    sets.push(`${key}=?`);
+    vals.push(v);
+  }
+  if (!sets.length) return res.json({ ok: true, unchanged: true });
+
+  vals.push(r.id);
+  db.prepare(`UPDATE resources SET ${sets.join(', ')} WHERE id=?`).run(...vals);
+  res.json({ ok: true, resource: db.prepare('SELECT * FROM resources WHERE id=?').get(r.id) });
+});
+
+// 管理员删除资源（软删除）
+router.delete('/resources/:id', (req, res) => {
+  const r = db.prepare('SELECT * FROM resources WHERE id=?').get(req.params.id);
+  if (!r) return res.status(404).json({ error: '资源不存在' });
+  db.prepare(`UPDATE resources SET deleted_at=? WHERE id=?`).run(Date.now(), r.id);
+  res.json({ ok: true });
+});
+
+// 订单列表 + 成交详情（管理员查看跟进）
+router.get('/orders', (req, res) => {
+  const rows = db.prepare(`
+    SELECT o.*, r.title AS resource_title, r.kind, r.weight_specs, r.truck_type,
+           r.egg_color, r.weight_spec,
+           f.name AS farm_name, f.phone AS farm_phone,
+           b.name AS buyer_name, b.phone AS buyer_phone
+    FROM orders o
+    JOIN resources r ON r.id = o.resource_id
+    JOIN users f ON f.id = o.farm_id
+    JOIN users b ON b.id = o.buyer_id
+    ORDER BY o.created_at DESC LIMIT 500
+  `).all();
+  res.json({
+    orders: rows.map(o => ({
+      ...o,
+      weight_specs: o.weight_specs ? safeJson(o.weight_specs) : null,
+    })),
+  });
+});
+
+router.get('/deposits', (req, res) => {
+  const rows = db.prepare(`
+    SELECT d.*, u.name AS user_name, u.role AS user_role FROM deposits d
+    JOIN users u ON u.id = d.user_id
+    ORDER BY d.paid_at DESC LIMIT 500
+  `).all();
+  res.json({ deposits: rows });
+});
+
+router.post('/deposits/:id/deduct', (req, res) => {
+  const { amount, reason } = req.body;
+  const dep = db.prepare('SELECT * FROM deposits WHERE id=?').get(req.params.id);
+  if (!dep) return res.status(404).json({ error: '保证金不存在' });
+  db.prepare("UPDATE deposits SET status='deducted', note=?, released_at=? WHERE id=?")
+    .run(reason || '扣款', Date.now(), dep.id);
+  notify(dep.user_id, 'deposit_deducted', '保证金扣款', `保证金扣款 ${amount || dep.amount} 元：${reason || ''}`, dep.id);
+  res.json({ ok: true });
+});
+
+router.get('/disputes', (req, res) => {
+  const rows = db.prepare(`
+    SELECT d.*, o.farm_id, o.buyer_id, o.final_price,
+      uf.name AS farm_name, ub.name AS buyer_name
+    FROM disputes d
+    JOIN orders o ON o.id = d.order_id
+    JOIN users uf ON uf.id = o.farm_id
+    JOIN users ub ON ub.id = o.buyer_id
+    ORDER BY d.created_at DESC LIMIT 500
+  `).all();
+  res.json({ disputes: rows });
+});
+
+router.post('/disputes/:id/resolve', (req, res) => {
+  const { resolution, side } = req.body;
+  const d = db.prepare('SELECT * FROM disputes WHERE id=?').get(req.params.id);
+  if (!d) return res.status(404).json({ error: '纠纷不存在' });
+  db.prepare(`UPDATE disputes SET status='resolved', resolution=?, resolved_at=? WHERE id=?`)
+    .run(resolution || '', Date.now(), d.id);
+  const order = db.prepare('SELECT * FROM orders WHERE id=?').get(d.order_id);
+  if (side === 'buyer') {
+    db.prepare(`UPDATE orders SET status='cancelled' WHERE id=?`).run(order.id);
+  } else if (side === 'farm') {
+    db.prepare(`UPDATE orders SET status='completed', confirmed_at=? WHERE id=?`).run(Date.now(), order.id);
+  } else {
+    db.prepare(`UPDATE orders SET status='completed', confirmed_at=? WHERE id=?`).run(Date.now(), order.id);
+  }
+  notify(order.farm_id, 'dispute_resolved', '纠纷已处理', resolution || '', order.id);
+  notify(order.buyer_id, 'dispute_resolved', '纠纷已处理', resolution || '', order.id);
+  res.json({ ok: true });
+});
+
+// ===== 通知设置 =====
+const settings = require('../services/settings');
+
+router.get('/notice-settings', (req, res) => {
+  res.json({ settings: settings.getAll() });
+});
+
+router.put('/notice-settings', (req, res) => {
+  const { notify_seller_sms, notify_buyer_sms, notify_platform_sms, platform_phones, wecom_webhook_url } = req.body;
+  if (notify_seller_sms !== undefined) settings.set('notify_seller_sms', !!notify_seller_sms);
+  if (notify_buyer_sms !== undefined) settings.set('notify_buyer_sms', !!notify_buyer_sms);
+  if (notify_platform_sms !== undefined) settings.set('notify_platform_sms', !!notify_platform_sms);
+  if (platform_phones !== undefined) {
+    const list = Array.isArray(platform_phones) ? platform_phones : [];
+    const cleaned = list.map(p => String(p).trim()).filter(p => /^1\d{10}$/.test(p));
+    settings.set('platform_phones', cleaned);
+  }
+  if (wecom_webhook_url !== undefined) {
+    settings.set('wecom_webhook_url', String(wecom_webhook_url || '').trim());
+  }
+  if (req.body.push_radius_km !== undefined) {
+    const n = Number(req.body.push_radius_km);
+    if (n >= 0 && n <= 5000) settings.set('push_radius_km', n);
+  }
+  res.json({ ok: true, settings: settings.getAll() });
+});
+
+// ===== 保证金 / 服务费金额设置 =====
+router.get('/deposit-settings', (req, res) => {
+  const s = settings.getAll();
+  res.json({
+    deposit_amount: s.deposit_amount,
+    service_fee_amount: s.service_fee_amount,
+    // 旧档位制（兼容旧后台 UI）
+    deposit_step_qty: s.deposit_step_qty,
+    deposit_supply_per_step: s.deposit_supply_per_step,
+    deposit_demand_per_step: s.deposit_demand_per_step,
+    deposit_bid_per_step: s.deposit_bid_per_step,
+  });
+});
+
+router.put('/deposit-settings', (req, res) => {
+  const fields = ['deposit_amount', 'service_fee_amount', 'deposit_step_qty', 'deposit_supply_per_step', 'deposit_demand_per_step', 'deposit_bid_per_step'];
+  for (const f of fields) {
+    if (req.body[f] !== undefined) {
+      const n = Number(req.body[f]);
+      if (!(n >= 0)) return res.status(400).json({ error: `${f} 必须为非负数` });
+      settings.set(f, n);
+    }
+  }
+  const s = settings.getAll();
+  res.json({
+    ok: true,
+    deposit_amount: s.deposit_amount,
+    service_fee_amount: s.service_fee_amount,
+    deposit_step_qty: s.deposit_step_qty,
+    deposit_supply_per_step: s.deposit_supply_per_step,
+    deposit_demand_per_step: s.deposit_demand_per_step,
+    deposit_bid_per_step: s.deposit_bid_per_step,
+  });
+});
+
+// ===== 客服二维码（订单成交后下发给买卖双方） =====
+router.get('/service-qr', (req, res) => {
+  res.json({
+    service_qr_url: settings.get('service_qr_url') || '',
+    service_qr_owner: settings.get('service_qr_owner') || '',
+  });
+});
+
+router.put('/service-qr', (req, res) => {
+  const { service_qr_url, service_qr_owner } = req.body;
+  if (service_qr_url !== undefined) settings.set('service_qr_url', String(service_qr_url || '').trim());
+  if (service_qr_owner !== undefined) settings.set('service_qr_owner', String(service_qr_owner || '').trim());
+  res.json({
+    ok: true,
+    service_qr_url: settings.get('service_qr_url') || '',
+    service_qr_owner: settings.get('service_qr_owner') || '',
+  });
+});
+
+// ===== 审核模式总开关 =====
+router.get('/review-mode', (req, res) => {
+  res.json({ review_mode: !!settings.get('review_mode') });
+});
+router.put('/review-mode', (req, res) => {
+  const v = !!req.body.review_mode;
+  settings.set('review_mode', v);
+  res.json({ ok: true, review_mode: v });
+});
+
+// ===== 提现审核 =====
+const balance = require('../services/balance');
+const { reconcileLegacyDeposits } = require('../services/auction');
+
+router.post('/reconcile-deposits', (req, res) => {
+  try {
+    reconcileLegacyDeposits();
+    res.json({ ok: true, message: '已重新对账历史保证金' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.get('/withdrawals', (req, res) => {
+  const status = req.query.status;
+  let sql = `
+    SELECT w.*, u.name AS user_name, u.phone AS user_phone, u.role AS user_role
+    FROM withdrawals w JOIN users u ON u.id = w.user_id
+  `;
+  const params = [];
+  if (status) { sql += ' WHERE w.status=?'; params.push(status); }
+  sql += ' ORDER BY w.applied_at DESC LIMIT 200';
+  res.json({ withdrawals: db.prepare(sql).all(...params) });
+});
+
+router.post('/withdrawals/:id/approve', (req, res) => {
+  const w = db.prepare('SELECT * FROM withdrawals WHERE id=?').get(req.params.id);
+  if (!w) return res.status(404).json({ error: '申请不存在' });
+  if (w.status !== 'pending') return res.status(400).json({ error: '仅待审核可批准' });
+  db.prepare(`UPDATE withdrawals SET status='approved', processed_at=?, processed_by=? WHERE id=?`)
+    .run(Date.now(), req.user.id, w.id);
+  notify(w.user_id, 'withdraw_approved', '提现已批准',
+    `您的 ${w.amount} 元提现申请已批准，将尽快打款`, w.id);
+  res.json({ ok: true });
+});
+
+router.post('/withdrawals/:id/reject', (req, res) => {
+  const { reason } = req.body || {};
+  const w = db.prepare('SELECT * FROM withdrawals WHERE id=?').get(req.params.id);
+  if (!w) return res.status(404).json({ error: '申请不存在' });
+  if (!['pending', 'approved'].includes(w.status)) return res.status(400).json({ error: '当前状态无法拒绝' });
+  db.prepare(`UPDATE withdrawals SET status='rejected', processed_at=?, processed_by=?, failure_reason=? WHERE id=?`)
+    .run(Date.now(), req.user.id, reason || '管理员驳回', w.id);
+  // 解冻金额回到用户可用余额
+  balance.unlock(w.user_id, w.amount, {
+    type: 'withdraw_refund',
+    ref_type: 'withdrawal',
+    ref_id: w.id,
+    note: reason ? `提现被拒：${reason}` : '提现被拒',
+  });
+  notify(w.user_id, 'withdraw_rejected', '提现被拒',
+    `您的 ${w.amount} 元提现申请被拒：${reason || '管理员驳回'}，金额已退回余额`, w.id);
+  res.json({ ok: true });
+});
+
+// 银行卡（或微信兜底）打款失败：把已 paid 的退回钱包；适用于"标已打款但
+// 实际银行卡转账失败 / 商户账户无余额"等场景。pending / approved 也可直接
+// 标 failed 退款（替代 /reject 文案更贴切）。
+router.post('/withdrawals/:id/mark-failed', (req, res) => {
+  const { reason } = req.body || {};
+  const w = db.prepare('SELECT * FROM withdrawals WHERE id=?').get(req.params.id);
+  if (!w) return res.status(404).json({ error: '申请不存在' });
+  if (!['pending', 'approved', 'paid', 'transferring'].includes(w.status)) {
+    return res.status(400).json({ error: `当前状态 ${w.status} 无法标记失败` });
+  }
+  const reasonText = reason || '打款失败，请稍后再试';
+  // 已 paid 的：之前走过 balance.consume（balance -= 退还 + locked -= 退还），
+  // 这里 credit 一笔补回 balance；locked 已经清，不再 unlock。
+  // 其它（pending / approved / transferring）：原始 lock 还在 locked_balance，
+  // 走 unlock 把锁定金额释放回可用即可。
+  if (w.status === 'paid') {
+    balance.credit(w.user_id, w.amount, {
+      type: 'withdraw_refund', ref_type: 'withdrawal', ref_id: w.id,
+      note: `提现失败退回：${reasonText}`,
+    });
+  } else {
+    try {
+      balance.unlock(w.user_id, w.amount, {
+        type: 'withdraw_refund', ref_type: 'withdrawal', ref_id: w.id,
+        note: `提现失败退回：${reasonText}`,
+      });
+    } catch (e) {
+      console.warn('[withdraw] mark-failed unlock 异常', { id: w.id, error: e.message });
+    }
+  }
+  db.prepare(`UPDATE withdrawals SET status='failed', processed_at=?, processed_by=?, failure_reason=? WHERE id=?`)
+    .run(Date.now(), req.user.id, reasonText, w.id);
+  notify(w.user_id, 'withdraw_failed', '提现失败',
+    `您的 ${w.amount} 元提现未能成功打款（${reasonText}），金额已退回钱包，可稍后再试`, w.id);
+  res.json({ ok: true });
+});
+
+router.post('/withdrawals/:id/mark-paid', async (req, res) => {
+  const { out_trade_no, mode } = req.body || {};
+  // mode: 'auto'（默认）→ 尝试调商家转账 API；'manual' → 仅记账，需管理员手工打款
+  const w = db.prepare('SELECT * FROM withdrawals WHERE id=?').get(req.params.id);
+  if (!w) return res.status(404).json({ error: '申请不存在' });
+  if (!['pending', 'approved'].includes(w.status)) return res.status(400).json({ error: '当前状态无法标记为已打款' });
+
+  let actualTradeNo = out_trade_no || null;
+  let transferNote = '';
+  let packageInfo = null;
+  let transferBillNo = null;
+  let finalStatus = 'paid';
+  let shouldConsume = true;
+
+  if (mode !== 'manual' && w.method === 'wechat') {
+    // 尝试微信商家转账
+    const user = db.prepare('SELECT id, name, wechat_openid FROM users WHERE id=?').get(w.user_id);
+    const { transferToWechat } = require('../services/wechat-transfer');
+    // 单笔转账新接口在 >= 2000 元时强制要求实名，从 user.name 取
+    const wPayload = { ...w, _user_name: (user && user.name) || '' };
+    const result = await transferToWechat(wPayload, user && user.wechat_openid);
+    if (result.ok) {
+      actualTradeNo = actualTradeNo || result.transfer_id;
+      packageInfo = result.package_info || null;
+      transferBillNo = result.bill_id || result.batch_id || null;
+      transferNote = `微信商家转账已发起 ${result.transfer_id}` + (transferBillNo ? `（单号 ${transferBillNo}）` : '');
+      if (packageInfo) {
+        // 新单笔转账接口：API 调用成功只代表创建了转账单，资金尚在路上
+        // 需要用户在小程序里 wx.requestMerchantTransfer 确认收款，到账后由
+        // 微信回调 notify_url 把状态推为 SUCCESS，此时才能扣余额。
+        finalStatus = 'transferring';
+        shouldConsume = false;
+      }
+    } else if (!result.demo) {
+      console.error('[withdraw] 商家转账 API 调用失败', {
+        withdrawalId: w.id,
+        http_status: result.http_status,
+        wx_code: result.wx_code,
+        wx_message: result.wx_message,
+        wx_detail: result.wx_detail,
+      });
+      return res.status(500).json({
+        error: '商家转账失败: ' + (result.error || '未知'),
+        http_status: result.http_status,
+        wx_code: result.wx_code,
+        wx_message: result.wx_message,
+        wx_detail: result.wx_detail,
+      });
+    } else {
+      console.warn('[withdraw] 商家转账走 demo 分支', { withdrawalId: w.id, reason: result.reason, msg: result.message });
+      transferNote = `⚠ ${result.message || '未接入商家转账，需在微信商户后台手工打款'}（reason=${result.reason || 'UNKNOWN'}）`;
+    }
+  } else if (w.method === 'bank') {
+    transferNote = '银行卡转账需后台财务线下操作';
+  }
+
+  db.prepare(`
+    UPDATE withdrawals SET status=?, out_trade_no=?, package_info=?, transfer_bill_no=?, processed_at=?, processed_by=?
+    WHERE id=?
+  `).run(finalStatus, actualTradeNo, packageInfo, transferBillNo, Date.now(), req.user.id, w.id);
+
+  if (shouldConsume) {
+    balance.consume(w.user_id, w.amount, {
+      type: 'withdraw_paid',
+      ref_type: 'withdrawal',
+      ref_id: w.id,
+      note: actualTradeNo ? `提现已打款 ${actualTradeNo}` : '提现已打款',
+    });
+  }
+
+  const userMsg = finalStatus === 'transferring'
+    ? `您的 ${w.amount} 元提现已创建商家转账单，请打开小程序「提现记录」点【确认收款】完成到账`
+    : `您的 ${w.amount} 元提现平台已处理${actualTradeNo ? '（流水号 ' + actualTradeNo + '）' : ''}，微信零钱通常实时到账、银行卡 2 小时内到账`;
+  notify(w.user_id, finalStatus === 'transferring' ? 'withdraw_transferring' : 'withdraw_paid',
+    finalStatus === 'transferring' ? '请确认收款' : '提现处理完成',
+    userMsg, w.id);
+  res.json({ ok: true, note: transferNote, status: finalStatus });
+});
+
+module.exports = router;

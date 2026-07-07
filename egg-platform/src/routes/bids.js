@@ -1,0 +1,104 @@
+const express = require('express');
+const db = require('../db');
+const { authRequired } = require('../middleware/auth');
+const { placeBidTx, triggerAutoBids, lockDepositForResource } = require('../services/auction');
+const balance = require('../services/balance');
+
+const router = express.Router();
+
+router.post('/', authRequired, (req, res) => {
+  const { resource_id, price } = req.body;
+  if (!resource_id || !price) return res.status(400).json({ error: '缺少参数' });
+  const r = db.prepare('SELECT * FROM resources WHERE id=?').get(Number(resource_id));
+  if (!r) return res.status(404).json({ error: '资源不存在' });
+  const isSupply = (r.kind || 'supply') === 'supply';
+  if (r.farm_id === req.user.id) return res.status(403).json({ error: '不能参与自己发布的报价' });
+  // 货源出价：任何登录用户均可（不再限 role）
+  // 求购需求应标：仅资质认证通过的鸡场可参与
+  if (!isSupply && req.user.license_status !== 'approved') {
+    return res.status(403).json({ error: '应标求购需求需先完成鸡场资质认证（养殖场资质）' });
+  }
+  // 求购"允许参与地区"限制：用户所在省份（按 region 文本匹配）须在白名单内
+  if (!isSupply && r.allow_provinces) {
+    let allow = [];
+    try { allow = JSON.parse(r.allow_provinces) || []; } catch (e) {}
+    if (allow.length) {
+      // 以「主页选择的位置」为准（loc_name + loc_address）；未设置时回退到资质
+      // 资料的所在省份/详细地址，避免没设过主页位置的用户被硬拦。
+      const homeLoc = String(req.user.loc_name || '') + ' ' + String(req.user.loc_address || '');
+      const hay = homeLoc.trim()
+        ? homeLoc
+        : String(req.user.region || '') + ' ' + String(req.user.address || '');
+      const ok = allow.some(p => hay.indexOf(p) >= 0);
+      if (!ok) {
+        return res.status(403).json({ error: `该求购仅限 ${allow.join('、')} 的养殖场参与，您所在地区不符合` });
+      }
+    }
+  }
+  // 首次报价：自动从钱包冻结一笔服务保障金
+  try {
+    lockDepositForResource({ userId: req.user.id, resourceId: Number(resource_id), type: 'buyer_bid' });
+  } catch (e) {
+    if (e.code === 'INSUFFICIENT_BALANCE') {
+      return res.status(402).json({ error: e.message, code: 'INSUFFICIENT_BALANCE', required: e.required, available: e.available });
+    }
+    return res.status(500).json({ error: e.message });
+  }
+  try {
+    const updated = placeBidTx(Number(resource_id), req.user.id, Number(price), 0, null);
+    res.json({ ok: true, resource: updated });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.post('/auto', authRequired, (req, res) => {
+  const { resource_id, max_price } = req.body;
+  if (!resource_id || !max_price) return res.status(400).json({ error: '缺少参数' });
+  const r = db.prepare('SELECT * FROM resources WHERE id=?').get(resource_id);
+  if (!r) return res.status(404).json({ error: '资源不存在' });
+  if (r.status !== 'auctioning') return res.status(400).json({ error: '报价未进行中' });
+  if ((r.kind || 'supply') !== 'supply') return res.status(400).json({ error: '求购暂不支持自动报价' });
+  // 自动报价前也确保保证金已冻结
+  try {
+    lockDepositForResource({ userId: req.user.id, resourceId: Number(resource_id), type: 'buyer_bid' });
+  } catch (e) {
+    if (e.code === 'INSUFFICIENT_BALANCE') {
+      return res.status(402).json({ error: e.message, code: 'INSUFFICIENT_BALANCE', required: e.required, available: e.available });
+    }
+    return res.status(500).json({ error: e.message });
+  }
+
+  db.prepare(`
+    INSERT INTO auto_bids (resource_id, bidder_id, max_price, active, created_at)
+    VALUES (?, ?, ?, 1, ?)
+    ON CONFLICT(resource_id, bidder_id) DO UPDATE SET max_price=excluded.max_price, active=1
+  `).run(resource_id, req.user.id, Number(max_price), Date.now());
+
+  triggerAutoBids(Number(resource_id), req.user.id);
+  res.json({ ok: true });
+});
+
+router.delete('/auto/:resource_id', authRequired, (req, res) => {
+  db.prepare('UPDATE auto_bids SET active=0 WHERE resource_id=? AND bidder_id=?')
+    .run(req.params.resource_id, req.user.id);
+  res.json({ ok: true });
+});
+
+router.get('/mine', authRequired, (req, res) => {
+  const rows = db.prepare(`
+    SELECT DISTINCT r.*, (r.current_bidder_id = ?) AS leading
+    FROM resources r
+    WHERE r.id IN (SELECT resource_id FROM bids WHERE bidder_id = ?)
+    ORDER BY r.end_at DESC
+  `).all(req.user.id, req.user.id);
+  const out = rows.map(r => ({
+    ...r,
+    photos: r.photos ? JSON.parse(r.photos) : [],
+    leading: !!r.leading,
+    time_left_ms: Math.max(0, r.end_at - Date.now()),
+  }));
+  res.json({ resources: out });
+});
+
+module.exports = router;
